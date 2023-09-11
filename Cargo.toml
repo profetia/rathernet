@@ -6,4 +6,5 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+cpal = { version = "0.15.2", features = ["asio"] }
 rodio = "0.17.1"
