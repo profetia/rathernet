@@ -10,3 +10,4 @@ anyhow = "1.0.75"
 cpal = { version = "0.15.2", features = ["asio"] }
 rodio = "0.17.1"
 thiserror = "1.0.48"
+tokio = { version = "1.32.0", features = ["full"] }
