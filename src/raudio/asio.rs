@@ -2,47 +2,33 @@ use anyhow::Result;
 use cpal::{traits::HostTrait, Device, Host};
 use rodio::{OutputStream, OutputStreamHandle, StreamError};
 
-pub struct AsioHost(Host);
+pub struct AsioHost {
+    pub inner: Host,
+}
 
 impl AsioHost {
     pub fn try_default() -> Result<Self> {
         let host = cpal::host_from_id(cpal::HostId::Asio)?;
-        Ok(Self(host))
+        Ok(Self { inner: host })
     }
 }
 
-impl From<AsioHost> for Host {
-    fn from(value: AsioHost) -> Self {
-        value.0
-    }
+pub struct AsioOutputStream {
+    pub stream: OutputStream,
+    pub handle: OutputStreamHandle,
 }
-
-pub struct AsioOutputStream(OutputStream);
-pub struct AsioOutputStreamHandle(OutputStreamHandle);
 
 impl AsioOutputStream {
-    pub fn try_from_device(device: &Device) -> Result<(Self, AsioOutputStreamHandle)> {
+    pub fn try_from_device(device: &Device) -> Result<Self> {
         let (stream, handle) = OutputStream::try_from_device(device)?;
-        Ok((AsioOutputStream(stream), AsioOutputStreamHandle(handle)))
+        Ok(Self { stream, handle })
     }
 
-    pub fn try_default() -> Result<(Self, AsioOutputStreamHandle)> {
+    pub fn try_default() -> Result<Self> {
         let host = AsioHost::try_default()?;
-        match host.0.default_output_device() {
+        match host.inner.default_output_device() {
             Some(device) => AsioOutputStream::try_from_device(&device),
             None => Err(StreamError::NoDevice.into()),
         }
-    }
-}
-
-impl From<AsioOutputStream> for OutputStream {
-    fn from(value: AsioOutputStream) -> Self {
-        value.0
-    }
-}
-
-impl From<AsioOutputStreamHandle> for OutputStreamHandle {
-    fn from(value: AsioOutputStreamHandle) -> Self {
-        value.0
     }
 }
