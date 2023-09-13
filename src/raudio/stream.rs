@@ -39,13 +39,26 @@ where
             move || {
                 while let Ok(task) = receiver.recv() {
                     let source = task.source;
+
+                    {
+                        let mut guard = task.inner.lock().unwrap();
+                        if let AudioOutputTaskState::Completed = guard.state {
+                            if let Some(waker) = guard.waker.take() {
+                                waker.wake()
+                            }
+                            continue;
+                        } else {
+                            guard.state = AudioOutputTaskState::Running;
+                        }
+                    }
+
                     sink.append(source);
                     sink.sleep_until_end();
 
-                    let mut guard = task.state.lock().unwrap();
+                    let mut guard = task.inner.lock().unwrap();
                     if let Some(waker) = guard.waker.take() {
                         waker.wake();
-                        guard.result = Some(Ok(()));
+                        guard.state = AudioOutputTaskState::Completed;
                     }
                 }
             }
@@ -69,19 +82,28 @@ where
     f32: FromSample<S::Item>,
     S::Item: Sample + Send,
 {
-    pub fn write(&self, source: S) -> impl Future<Output = Result<()>> {
-        let state = Arc::new(Mutex::new(AudioOutputTaskState {
+    pub fn write(&self, source: S) -> AudioOutputFuture {
+        let state = Arc::new(Mutex::new(AudioOutputTaskInner {
             waker: None,
-            result: None,
+            state: AudioOutputTaskState::Ready,
         }));
         let task = AudioOutputTask {
             source,
-            state: Arc::clone(&state),
+            inner: Arc::clone(&state),
         };
         self.sender.send(task).unwrap();
         AudioOutputFuture {
             sink: self.sink.clone(),
             state,
+        }
+    }
+
+    pub async fn write_timeout(&self, source: S, timeout: std::time::Duration) {
+        let write_future = self.write(source);
+        let timeout_future = tokio::time::sleep(timeout);
+        tokio::select! {
+            _ = write_future => {},
+            _ = timeout_future => {},
         }
     }
 }
@@ -93,29 +115,35 @@ where
     S::Item: Sample + Send,
 {
     source: S,
-    state: Arc<Mutex<AudioOutputTaskState>>,
+    inner: Arc<Mutex<AudioOutputTaskInner>>,
 }
 
-struct AudioOutputTaskState {
+struct AudioOutputTaskInner {
     waker: Option<Waker>,
-    result: Option<Result<()>>,
+    state: AudioOutputTaskState,
 }
 
-struct AudioOutputFuture {
+enum AudioOutputTaskState {
+    Ready,
+    Running,
+    Completed,
+}
+
+pub struct AudioOutputFuture {
     sink: Arc<Sink>,
-    state: Arc<Mutex<AudioOutputTaskState>>,
+    state: Arc<Mutex<AudioOutputTaskInner>>,
 }
 
 impl Future for AudioOutputFuture {
-    type Output = Result<()>;
+    type Output = ();
 
     fn poll(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         let mut guard = self.state.lock().unwrap();
-        if let Some(result) = guard.result.take() {
-            return std::task::Poll::Ready(result);
+        if let AudioOutputTaskState::Completed = guard.state {
+            return std::task::Poll::Ready(());
         }
         guard.waker = Some(cx.waker().clone());
         std::task::Poll::Pending
@@ -124,9 +152,10 @@ impl Future for AudioOutputFuture {
 
 impl Drop for AudioOutputFuture {
     fn drop(&mut self) {
-        let guard = self.state.lock().unwrap();
-        if guard.result.is_none() {
+        let mut guard = self.state.lock().unwrap();
+        if let AudioOutputTaskState::Running = guard.state {
             self.sink.clear();
         }
+        guard.state = AudioOutputTaskState::Completed;
     }
 }
