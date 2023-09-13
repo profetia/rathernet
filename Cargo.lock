@@ -799,6 +799,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cpal",
+ "hound",
  "rodio",
  "thiserror",
  "tokio",
