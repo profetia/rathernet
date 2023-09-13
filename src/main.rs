@@ -91,7 +91,11 @@ async fn main() -> Result<(), anyhow::Error> {
     println!("Begin playback...");
     let stream = AudioOutputStream::try_default()?;
 
-    stream.write(track.into_iter()).await;
+    stream.write(track.clone().into_iter()).await;
+
+    println!("Saving {}...", PATH);
+
+    track.save_as(PATH)?;
 
     Ok(())
 }

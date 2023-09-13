@@ -4,6 +4,7 @@ use std::{
     vec::IntoIter,
 };
 
+use anyhow::Result;
 use cpal::SupportedStreamConfig;
 use hound::{Sample, WavSpec};
 use rodio::Source;
@@ -27,6 +28,7 @@ impl IntoSpec for SupportedStreamConfig {
     }
 }
 
+#[derive(Clone)]
 pub struct Track<T: Sample + rodio::Sample> {
     spec: WavSpec,
     buf: Vec<T>,
@@ -78,6 +80,18 @@ impl<T: Sample + rodio::Sample> Track<T> {
             inner: self.buf.iter_mut(),
         }
     }
+
+    pub fn save_as(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        let mut writer = hound::WavWriter::create(path, self.spec)?;
+
+        for sample in &self.buf {
+            writer.write_sample(*sample)?;
+        }
+
+        writer.finalize()?;
+
+        Ok(())
+    }
 }
 
 pub struct TrackIter<'a, T: Sample + rodio::Sample> {
@@ -89,6 +103,12 @@ impl<'a, T: Sample + rodio::Sample> Iterator for TrackIter<'a, T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next()
+    }
+}
+
+impl<'a, T: Sample + rodio::Sample> ExactSizeIterator for TrackIter<'a, T> {
+    fn len(&self) -> usize {
+        self.inner.len()
     }
 }
 
@@ -115,6 +135,12 @@ impl<'a, T: Sample + rodio::Sample> Iterator for TrackIterMut<'a, T> {
     }
 }
 
+impl<'a, T: Sample + rodio::Sample> ExactSizeIterator for TrackIterMut<'a, T> {
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+}
+
 impl<'a> IntoIterator for &'a mut Track<f32> {
     type Item = &'a mut f32;
     type IntoIter = TrackIterMut<'a, f32>;
@@ -136,6 +162,12 @@ impl<T: Sample + rodio::Sample> Iterator for TrackIntoIter<T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next()
+    }
+}
+
+impl<T: Sample + rodio::Sample> ExactSizeIterator for TrackIntoIter<T> {
+    fn len(&self) -> usize {
+        self.inner.len()
     }
 }
 
