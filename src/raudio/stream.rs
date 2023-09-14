@@ -4,7 +4,7 @@ use std::{
         mpsc::{self, Sender},
         Arc, Mutex,
     },
-    task::Waker,
+    task::{Poll, Waker},
     thread,
 };
 
@@ -31,34 +31,38 @@ where
     f32: FromSample<S::Item>,
     S::Item: Sample + Send,
 {
-    pub fn try_from_stream(stream: AsioOutputStream) -> Result<Self> {
+    fn try_from_stream(stream: AsioOutputStream) -> Result<Self> {
         let sink = Arc::new(Sink::try_new(&stream.handle)?);
         let (sender, receiver) = mpsc::channel::<AudioOutputTask<S>>();
         thread::spawn({
             let sink = Arc::clone(&sink);
             move || {
                 while let Ok(task) = receiver.recv() {
-                    let source = task.source;
-
                     {
-                        let mut guard = task.inner.lock().unwrap();
-                        if let AudioOutputTaskState::Completed = guard.state {
-                            if let Some(waker) = guard.waker.take() {
-                                waker.wake()
+                        let mut guard = task.lock().unwrap();
+                        match guard.take() {
+                            AudioOutputTaskState::Ready(source, waker) => {
+                                sink.append(source);
+                                *guard = AudioOutputTaskState::Running(waker);
                             }
-                            continue;
-                        } else {
-                            guard.state = AudioOutputTaskState::Running;
+                            state => {
+                                *guard = state;
+                                continue;
+                            }
                         }
                     }
 
-                    sink.append(source);
                     sink.sleep_until_end();
 
-                    let mut guard = task.inner.lock().unwrap();
-                    if let Some(waker) = guard.waker.take() {
-                        waker.wake();
-                        guard.state = AudioOutputTaskState::Completed;
+                    let mut guard = task.lock().unwrap();
+                    match guard.take() {
+                        AudioOutputTaskState::Running(waker) => {
+                            if let Some(waker) = waker {
+                                waker.wake()
+                            }
+                            *guard = AudioOutputTaskState::Completed;
+                        }
+                        state => *guard = state,
                     }
                 }
             }
@@ -74,6 +78,10 @@ where
     pub fn try_default() -> Result<Self> {
         Self::try_from_stream(AsioOutputStream::try_default()?)
     }
+
+    pub fn try_from_name(name: &str) -> Result<Self> {
+        Self::try_from_stream(AsioOutputStream::try_from_name(name)?)
+    }
 }
 
 impl<S> AudioOutputStream<S>
@@ -82,19 +90,12 @@ where
     f32: FromSample<S::Item>,
     S::Item: Sample + Send,
 {
-    pub fn write(&self, source: S) -> AudioOutputFuture {
-        let state = Arc::new(Mutex::new(AudioOutputTaskInner {
-            waker: None,
-            state: AudioOutputTaskState::Ready,
-        }));
-        let task = AudioOutputTask {
-            source,
-            inner: Arc::clone(&state),
-        };
-        self.sender.send(task).unwrap();
+    pub fn write(&self, source: S) -> AudioOutputFuture<S> {
+        let task = Arc::new(Mutex::new(AudioOutputTaskState::Pending(source)));
         AudioOutputFuture {
             sink: self.sink.clone(),
-            state,
+            sender: self.sender.clone(),
+            task,
         }
     }
 
@@ -108,54 +109,100 @@ where
     }
 }
 
-struct AudioOutputTask<S>
+type AudioOutputTask<S> = Arc<Mutex<AudioOutputTaskState<S>>>;
+
+enum AudioOutputTaskState<S>
 where
     S: Source + Send + 'static,
     f32: FromSample<S::Item>,
     S::Item: Sample + Send,
 {
-    source: S,
-    inner: Arc<Mutex<AudioOutputTaskInner>>,
-}
-
-struct AudioOutputTaskInner {
-    waker: Option<Waker>,
-    state: AudioOutputTaskState,
-}
-
-enum AudioOutputTaskState {
-    Ready,
-    Running,
+    Pending(S),
+    Ready(S, Option<Waker>),
+    Running(Option<Waker>),
     Completed,
 }
 
-pub struct AudioOutputFuture {
-    sink: Arc<Sink>,
-    state: Arc<Mutex<AudioOutputTaskInner>>,
+impl<S> AudioOutputTaskState<S>
+where
+    S: Source + Send + 'static,
+    f32: FromSample<S::Item>,
+    S::Item: Sample + Send,
+{
+    fn take(&mut self) -> Self {
+        std::mem::replace(self, AudioOutputTaskState::Completed)
+    }
 }
 
-impl Future for AudioOutputFuture {
+pub struct AudioOutputFuture<S>
+where
+    S: Source + Send + 'static,
+    f32: FromSample<S::Item>,
+    S::Item: Sample + Send,
+{
+    sink: Arc<Sink>,
+    sender: Sender<AudioOutputTask<S>>,
+    task: AudioOutputTask<S>,
+}
+
+impl<S> Future for AudioOutputFuture<S>
+where
+    S: Source + Send + 'static,
+    f32: FromSample<S::Item>,
+    S::Item: Sample + Send,
+{
     type Output = ();
 
     fn poll(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
-        let mut guard = self.state.lock().unwrap();
-        if let AudioOutputTaskState::Completed = guard.state {
-            return std::task::Poll::Ready(());
+        let mut guard = self.task.lock().unwrap();
+        match guard.take() {
+            AudioOutputTaskState::Pending(source) => {
+                *guard = AudioOutputTaskState::Ready(source, Some(cx.waker().clone()));
+                self.sender.send(self.task.clone()).unwrap();
+                Poll::Pending
+            }
+            AudioOutputTaskState::Ready(source, _) => {
+                *guard = AudioOutputTaskState::Ready(source, Some(cx.waker().clone()));
+                Poll::Pending
+            }
+            AudioOutputTaskState::Running(_) => {
+                *guard = AudioOutputTaskState::Running(Some(cx.waker().clone()));
+                Poll::Pending
+            }
+            _ => Poll::Ready(()),
         }
-        guard.waker = Some(cx.waker().clone());
-        std::task::Poll::Pending
     }
 }
 
-impl Drop for AudioOutputFuture {
+impl<S> Drop for AudioOutputFuture<S>
+where
+    S: Source + Send + 'static,
+    f32: FromSample<S::Item>,
+    S::Item: Sample + Send,
+{
     fn drop(&mut self) {
-        let mut guard = self.state.lock().unwrap();
-        if let AudioOutputTaskState::Running = guard.state {
-            self.sink.clear();
+        let mut guard = self.task.lock().unwrap();
+        match guard.take() {
+            AudioOutputTaskState::Pending(_) => {
+                *guard = AudioOutputTaskState::Completed;
+            }
+            AudioOutputTaskState::Ready(_, waker) => {
+                if let Some(waker) = waker {
+                    waker.wake()
+                }
+                *guard = AudioOutputTaskState::Completed;
+            }
+            AudioOutputTaskState::Running(waker) => {
+                self.sink.clear();
+                if let Some(waker) = waker {
+                    waker.wake()
+                }
+                *guard = AudioOutputTaskState::Completed;
+            }
+            _ => {}
         }
-        guard.state = AudioOutputTaskState::Completed;
     }
 }
