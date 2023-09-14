@@ -1,32 +1,36 @@
-use std::{fs::File, io::BufReader, thread, time::Duration};
+//! Records a WAV file (roughly 3 seconds long) using the default input device and config.
+//!
+//! The input data is recorded to "$CARGO_MANIFEST_DIR/recorded.wav".
 
-use anyhow::Result;
-
-use rathernet::raudio::{track::Track, AudioOutputStream};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{FromSample, Sample};
+use hound::SampleFormat;
+use rathernet::raudio::{AsioDevice, AudioInputStream, AudioOutputStream};
+use rathernet::raudio::{IntoSpec, Track};
 use rodio::Decoder;
+use tokio_stream::StreamExt;
+
+use std::fs::File;
+use std::io::BufReader;
+
+use std::thread;
+use std::time::Duration;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), anyhow::Error> {
+    let mut stream = AudioInputStream::<f32>::try_default()?;
+
+    let data = stream.read_timeout(Duration::from_secs(10)).await;
+
+    let mut spec = stream.config().clone().into_spec();
+    spec.sample_format = SampleFormat::Float;
+
+    let track = Track::from_vec(spec, data);
+
+    drop(stream);
+
     let stream = AudioOutputStream::try_default()?;
-    let file = BufReader::new(File::open("assets/audio/A_Horse_With_No_Name.wav")?);
-    let source = Decoder::new(file)?;
-
-    let track = Track::from_source(source.into_iter());
-
-    let future = stream.write_timeout(track.into_iter(), Duration::from_secs(20));
-
-    println!("Waiting for audio to not be playing...");
-    thread::sleep(Duration::from_secs(5));
-
-    println!("Audio should be playing now.");
-
-    future.await;
-
-    println!("Audio should be done playing now.");
-
-    thread::sleep(Duration::from_secs(5));
-
-    println!("Exiting...");
+    stream.write(track.into_iter()).await;
 
     Ok(())
 }
