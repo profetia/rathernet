@@ -28,7 +28,7 @@ impl IntoSpec for SupportedStreamConfig {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Track<T: Sample + rodio::Sample> {
     spec: WavSpec,
     buf: Vec<T>,
@@ -57,6 +57,10 @@ impl<T: Sample + rodio::Sample> Track<T> {
         let buf = source.collect::<Vec<_>>();
 
         Self { spec, buf }
+    }
+
+    pub fn from_vec(spec: WavSpec, source: Vec<T>) -> Self {
+        Self { spec, buf: source }
     }
 }
 
