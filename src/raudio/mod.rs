@@ -1,5 +1,7 @@
 mod asio;
 mod stream;
-pub mod track;
+mod track;
 
+pub use asio::{AsioDevice, AsioHost, AsioOutputStream};
 pub use stream::{AudioOutputFuture, AudioOutputStream};
+pub use track::{IntoSpec, Track, TrackIntoIter, TrackIter, TrackIterMut};
