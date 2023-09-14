@@ -1,18 +1,25 @@
 use std::{
     future::Future,
+    mem,
     sync::{
-        mpsc::{self, Sender},
+        mpsc::{self, Receiver, Sender},
         Arc, Mutex,
     },
     task::{Poll, Waker},
     thread,
+    time::Duration,
 };
 
+use tokio_stream::{Stream, StreamExt};
+
 use anyhow::Result;
-use cpal::FromSample;
+use cpal::{
+    traits::{DeviceTrait, StreamTrait},
+    FromSample, SampleFormat, SupportedStreamConfig, SupportedStreamConfigsError,
+};
 use rodio::{Sample, Sink, Source};
 
-use super::asio::AsioOutputStream;
+use super::{asio::AsioOutputStream, AsioDevice};
 
 pub struct AudioOutputStream<S>
 where
@@ -57,9 +64,7 @@ where
                     let mut guard = task.lock().unwrap();
                     match guard.take() {
                         AudioOutputTaskState::Running(waker) => {
-                            if let Some(waker) = waker {
-                                waker.wake()
-                            }
+                            waker.wake();
                             *guard = AudioOutputTaskState::Completed;
                         }
                         state => *guard = state,
@@ -73,6 +78,10 @@ where
             sink,
             sender,
         })
+    }
+
+    pub fn try_from_device(device: &AsioDevice) -> Result<Self> {
+        Self::try_from_stream(AsioOutputStream::try_from_device(device)?)
     }
 
     pub fn try_default() -> Result<Self> {
@@ -118,8 +127,8 @@ where
     S::Item: Sample + Send,
 {
     Pending(S),
-    Ready(S, Option<Waker>),
-    Running(Option<Waker>),
+    Ready(S, Waker),
+    Running(Waker),
     Completed,
 }
 
@@ -130,7 +139,7 @@ where
     S::Item: Sample + Send,
 {
     fn take(&mut self) -> Self {
-        std::mem::replace(self, AudioOutputTaskState::Completed)
+        mem::replace(self, AudioOutputTaskState::Completed)
     }
 }
 
@@ -160,16 +169,16 @@ where
         let mut guard = self.task.lock().unwrap();
         match guard.take() {
             AudioOutputTaskState::Pending(source) => {
-                *guard = AudioOutputTaskState::Ready(source, Some(cx.waker().clone()));
+                *guard = AudioOutputTaskState::Ready(source, cx.waker().clone());
                 self.sender.send(self.task.clone()).unwrap();
                 Poll::Pending
             }
             AudioOutputTaskState::Ready(source, _) => {
-                *guard = AudioOutputTaskState::Ready(source, Some(cx.waker().clone()));
+                *guard = AudioOutputTaskState::Ready(source, cx.waker().clone());
                 Poll::Pending
             }
             AudioOutputTaskState::Running(_) => {
-                *guard = AudioOutputTaskState::Running(Some(cx.waker().clone()));
+                *guard = AudioOutputTaskState::Running(cx.waker().clone());
                 Poll::Pending
             }
             _ => Poll::Ready(()),
@@ -190,19 +199,200 @@ where
                 *guard = AudioOutputTaskState::Completed;
             }
             AudioOutputTaskState::Ready(_, waker) => {
-                if let Some(waker) = waker {
-                    waker.wake()
-                }
+                waker.wake();
                 *guard = AudioOutputTaskState::Completed;
             }
             AudioOutputTaskState::Running(waker) => {
                 self.sink.clear();
-                if let Some(waker) = waker {
-                    waker.wake()
-                }
+                waker.wake();
                 *guard = AudioOutputTaskState::Completed;
             }
             _ => {}
+        }
+    }
+}
+
+pub struct AudioInputStream<S>
+where
+    S: Sample + hound::Sample,
+{
+    stream: cpal::Stream,
+    _config: SupportedStreamConfig,
+    task: AudioInputTask,
+    reciever: Receiver<Vec<S>>,
+}
+
+impl<S> AudioInputStream<S>
+where
+    S: Send
+        + Sample
+        + hound::Sample
+        + FromSample<i8>
+        + FromSample<i16>
+        + FromSample<i32>
+        + FromSample<f32>
+        + 'static,
+{
+    pub fn try_from_device(device: &AsioDevice) -> Result<Self> {
+        let config = device.inner.default_input_config()?;
+        let (sender, reciever) = mpsc::channel::<Vec<S>>();
+        let task = Arc::new(Mutex::new(AudioInputTaskState::Pending));
+        macro_rules! build_input_stream {
+            ($sample_type:ty) => {
+                device.inner.build_input_stream(
+                    &config.clone().into(),
+                    {
+                        let sender = sender.clone();
+                        let task = task.clone();
+                        move |data: &[$sample_type], _: _| {
+                            let guard = task.lock().unwrap();
+                            if let AudioInputTaskState::Running(ref waker) = *guard {
+                                let data = data
+                                    .iter()
+                                    .map(|sample| S::from_sample(*sample))
+                                    .collect::<Vec<S>>();
+                                sender.send(data).unwrap();
+                                waker.wake_by_ref();
+                            }
+                        }
+                    },
+                    |error| eprintln!("an error occurred on input stream: {}", error),
+                    None,
+                )
+            };
+        }
+        let stream = match config.sample_format() {
+            SampleFormat::I8 => build_input_stream!(i8),
+            SampleFormat::I16 => build_input_stream!(i16),
+            SampleFormat::I32 => build_input_stream!(i32),
+            SampleFormat::F32 => build_input_stream!(f32),
+            _ => return Err(SupportedStreamConfigsError::InvalidArgument.into()),
+        }?;
+
+        stream.pause().unwrap();
+
+        Ok(AudioInputStream {
+            stream,
+            _config: config,
+            task,
+            reciever,
+        })
+    }
+
+    pub fn try_default() -> Result<Self> {
+        let device = AsioDevice::try_default()?;
+        Self::try_from_device(&device)
+    }
+
+    pub fn try_from_name(name: &str) -> Result<Self> {
+        let device = AsioDevice::try_from_name(name)?;
+        Self::try_from_device(&device)
+    }
+}
+
+impl<S> AudioInputStream<S>
+where
+    S: Send
+        + Sample
+        + hound::Sample
+        + FromSample<i8>
+        + FromSample<i16>
+        + FromSample<i32>
+        + FromSample<f32>
+        + 'static,
+{
+    pub fn config(&self) -> &SupportedStreamConfig {
+        &self._config
+    }
+
+    pub fn suspend(&self) {
+        let mut guard = self.task.lock().unwrap();
+        match guard.take() {
+            AudioInputTaskState::Running(waker) => {
+                self.stream.pause().unwrap();
+                *guard = AudioInputTaskState::Suspended;
+                waker.wake();
+            }
+            content => *guard = content,
+        }
+    }
+
+    pub fn resume(&self) {
+        let mut guard = self.task.lock().unwrap();
+        match guard.take() {
+            AudioInputTaskState::Suspended => *guard = AudioInputTaskState::Pending,
+            content => *guard = content,
+        }
+    }
+
+    pub async fn read(&mut self) -> Vec<S> {
+        let mut result = vec![];
+        while let Some(data) = self.next().await {
+            result.extend(data.into_iter());
+        }
+        result
+    }
+
+    pub async fn read_timeout(&mut self, timeout: Duration) -> Vec<S> {
+        let mut result = vec![];
+        tokio::select! {
+            _ = async {
+                while let Some(data) = self.next().await {
+                    result.extend(data.into_iter());
+                }
+            } => {},
+            _ = tokio::time::sleep(timeout) => {},
+        };
+        result
+    }
+}
+
+type AudioInputTask = Arc<Mutex<AudioInputTaskState>>;
+
+enum AudioInputTaskState {
+    Pending,
+    Running(Waker),
+    Suspended,
+}
+
+impl AudioInputTaskState {
+    fn take(&mut self) -> AudioInputTaskState {
+        mem::replace(self, AudioInputTaskState::Suspended)
+    }
+}
+
+impl<S> Stream for AudioInputStream<S>
+where
+    S: Send
+        + Sample
+        + hound::Sample
+        + FromSample<i8>
+        + FromSample<i16>
+        + FromSample<i32>
+        + FromSample<f32>
+        + 'static,
+{
+    type Item = Vec<S>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        let mut guard = self.task.lock().unwrap();
+        match guard.take() {
+            AudioInputTaskState::Pending => {
+                *guard = AudioInputTaskState::Running(cx.waker().clone());
+                self.stream.play().unwrap();
+                Poll::Pending
+            }
+            AudioInputTaskState::Running(_) => {
+                *guard = AudioInputTaskState::Running(cx.waker().clone());
+                match self.reciever.try_recv() {
+                    Ok(data) => Poll::Ready(Some(data)),
+                    Err(_) => Poll::Pending,
+                }
+            }
+            AudioInputTaskState::Suspended => Poll::Ready(None),
         }
     }
 }
