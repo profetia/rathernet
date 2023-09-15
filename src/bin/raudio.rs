@@ -1,10 +1,11 @@
 use std::{fs::File, io::BufReader, path::PathBuf};
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+use cpal::{traits::HostTrait, SupportedInputConfigs, SupportedOutputConfigs};
 use hound::SampleFormat;
-use rathernet::raudio::{AsioDevice, AudioInputStream, AudioOutputStream, IntoSpec};
-use rodio::Decoder;
+use rathernet::raudio::{AsioDevice, AsioHost, AudioInputStream, AudioOutputStream, IntoSpec};
+use rodio::{Decoder, DeviceTrait};
 
 #[derive(Debug, Parser)]
 #[clap(name = "raudio", version = "0.1.0", author = "Rathernet")]
@@ -57,10 +58,25 @@ enum Commands {
         #[clap(short, long)]
         file: Option<PathBuf>,
         /// The elapsed time to read and write audio for.
-        #[clap(short, long)]
-        #[arg(default_value = "10")]
+        #[clap(short, long, default_value = "10")]
         elapse: u64,
     },
+    /// List the available audio devices.
+    List {
+        /// The type of devices to be displayed.
+        #[clap(short, long)]
+        r#type: Option<DeviceType>,
+        /// Display supported configurations for each device.
+        #[clap(short, long, default_value = "false")]
+        config: bool,
+    },
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug)]
+enum DeviceType {
+    Input,
+    Output,
+    Duplex,
 }
 
 #[tokio::main]
@@ -151,6 +167,58 @@ async fn main() -> Result<()> {
                 stream.write(track.into_iter()).await;
             }
         }
+        Commands::List { r#type, config } => {
+            let host = AsioHost::try_new()?;
+            for (index, device) in host.inner.devices()?.enumerate() {
+                let name = device.name()?;
+                let input_configs = device.supported_input_configs().ok();
+                let output_configs = device.supported_output_configs().ok();
+
+                if let Some(device_type) = r#type {
+                    match device_type {
+                        DeviceType::Duplex
+                            if input_configs.is_none() || output_configs.is_none() =>
+                        {
+                            continue;
+                        }
+                        DeviceType::Input if input_configs.is_none() => {
+                            continue;
+                        }
+                        DeviceType::Output if output_configs.is_none() => {
+                            continue;
+                        }
+                        _ => {}
+                    }
+                    println!("{} {}", index, name);
+                    if config {
+                        display_device(input_configs, output_configs);
+                    }
+                } else {
+                    println!("{} {}", index, name);
+                    if config {
+                        display_device(input_configs, output_configs);
+                    }
+                }
+            }
+        }
     }
     Ok(())
+}
+
+fn display_device(
+    input_configs: Option<SupportedInputConfigs>,
+    output_configs: Option<SupportedOutputConfigs>,
+) {
+    if let Some(input_configs) = input_configs {
+        println!("Supported input configs:");
+        for (index, config) in input_configs.enumerate() {
+            println!("  {} {:?}", index, config);
+        }
+    }
+    if let Some(output_configs) = output_configs {
+        println!("Supported output configs:");
+        for (index, config) in output_configs.enumerate() {
+            println!("  {} {:?}", index, config);
+        }
+    }
 }
