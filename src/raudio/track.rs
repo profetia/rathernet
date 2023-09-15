@@ -85,7 +85,7 @@ impl<T: Sample + rodio::Sample> Track<T> {
         }
     }
 
-    pub fn save_as(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+    pub fn write_to_file(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
         let mut writer = hound::WavWriter::create(path, self.spec)?;
 
         for sample in &self.buf {
