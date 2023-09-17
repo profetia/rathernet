@@ -3,8 +3,8 @@ use std::f32::consts::PI;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use cpal::SupportedStreamConfig;
-use hound::SampleFormat;
-use rathernet::raudio::{AsioDevice, AudioOutputStream, IntoSpec, Track};
+
+use rathernet::raudio::{AsioDevice, AudioOutputStream, AudioSamples, AudioTrack};
 use rodio::DeviceTrait;
 
 #[derive(Debug, Parser)]
@@ -50,14 +50,11 @@ async fn calibrate(elapse: u64, device: Option<String>) -> Result<()> {
             let t = item as f32 * 2.0 * PI / sample_rate as f32;
             (t * 1000f32).sin() + (t * 10000f32).sin()
         })
-        .collect::<Vec<f32>>();
+        .collect::<AudioSamples<f32>>();
 
-    let mut spec = config.into_spec();
-    spec.sample_format = SampleFormat::Float;
+    let track = AudioTrack::new(config, signal);
 
-    let track = Track::from_vec(spec, signal);
-
-    stream.write(track.into_iter()).await;
+    stream.write(track).await;
 
     Ok(())
 }
