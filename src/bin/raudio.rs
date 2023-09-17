@@ -5,8 +5,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use cpal::{
     traits::HostTrait, SupportedInputConfigs, SupportedOutputConfigs, SupportedStreamConfig,
 };
-use hound::SampleFormat;
-use rathernet::raudio::{AsioDevice, AsioHost, AudioInputStream, AudioOutputStream, IntoSpec};
+
+use rathernet::raudio::{AsioDevice, AsioHost, AudioInputStream, AudioOutputStream, AudioTrack};
 use rodio::{Decoder, DeviceTrait};
 
 #[derive(Debug, Parser)]
@@ -128,25 +128,19 @@ async fn main() -> Result<()> {
                 default_config.buffer_size().clone(),
                 default_config.sample_format(),
             );
-            let mut stream = AudioInputStream::<f32>::try_from_device_config(&device, config)?;
+            let mut stream =
+                AudioInputStream::<f32>::try_from_device_config(&device, config.clone())?;
             let data = stream
                 .read_timeout(std::time::Duration::from_secs(elapse))
                 .await;
-            let track = rathernet::raudio::Track::from_vec(
-                {
-                    let mut spec = stream.config().clone().into_spec();
-                    spec.sample_format = SampleFormat::Float;
-                    spec
-                },
-                data,
-            );
+            let track = AudioTrack::new(config, data);
             drop(stream);
             if let Some(path) = file {
                 track.write_to_file(path)?;
             } else {
                 eprintln!("No output file specified. Playing audio to default output device.");
                 let stream = AudioOutputStream::try_default()?;
-                stream.write(track.into_iter()).await;
+                stream.write(track).await;
             }
         }
         Commands::Duplex {
@@ -168,7 +162,7 @@ async fn main() -> Result<()> {
             );
             let mut read_stream =
                 AudioInputStream::<f32>::try_from_device_config(&device, config.clone())?;
-            let write_stream = AudioOutputStream::try_from_device_config(&device, config)?;
+            let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
 
             let source = Decoder::new(BufReader::new(File::open(source)?))?;
 
@@ -177,9 +171,7 @@ async fn main() -> Result<()> {
                 read_stream.read_timeout(std::time::Duration::from_secs(elapse))
             );
 
-            let mut spec = read_stream.config().clone().into_spec();
-            spec.sample_format = SampleFormat::Float;
-            let track = rathernet::raudio::Track::from_vec(spec, data);
+            let track = AudioTrack::new(config, data);
 
             drop(read_stream);
             drop(write_stream);
@@ -189,7 +181,7 @@ async fn main() -> Result<()> {
             } else {
                 eprintln!("No output file specified. Playing audio to default output device.");
                 let stream = AudioOutputStream::try_default()?;
-                stream.write(track.into_iter()).await;
+                stream.write(track).await;
             }
         }
         Commands::List { r#type, config } => {

@@ -19,7 +19,7 @@ use cpal::{
 };
 use rodio::{Sample, Sink, Source};
 
-use super::{asio::AsioOutputStream, AsioDevice};
+use super::{asio::AsioOutputStream, AsioDevice, AudioSamples};
 
 pub struct AudioOutputStream<S>
 where
@@ -215,21 +215,17 @@ where
     }
 }
 
-pub struct AudioInputStream<S>
-where
-    S: Sample + hound::Sample,
-{
+pub struct AudioInputStream<S: Sample> {
     stream: cpal::Stream,
     _config: SupportedStreamConfig,
     task: AudioInputTask,
-    reciever: Receiver<Vec<S>>,
+    reciever: Receiver<AudioSamples<S>>,
 }
 
 impl<S> AudioInputStream<S>
 where
     S: Send
         + Sample
-        + hound::Sample
         + FromSample<i8>
         + FromSample<i16>
         + FromSample<i32>
@@ -240,7 +236,7 @@ where
         device: &AsioDevice,
         config: SupportedStreamConfig,
     ) -> Result<Self> {
-        let (sender, reciever) = mpsc::channel::<Vec<S>>();
+        let (sender, reciever) = mpsc::channel::<AudioSamples<S>>();
         let task = Arc::new(Mutex::new(AudioInputTaskState::Pending));
 
         let stream = match config.sample_format() {
@@ -283,12 +279,12 @@ where
 fn build_input_stream<T, S>(
     device: &AsioDevice,
     config: SupportedStreamConfig,
-    sender: Sender<Vec<S>>,
+    sender: Sender<AudioSamples<S>>,
     task: Arc<Mutex<AudioInputTaskState>>,
 ) -> Result<cpal::Stream>
 where
     T: SizedSample,
-    S: Send + Sample + hound::Sample + FromSample<T> + 'static,
+    S: Send + Sample + FromSample<T> + 'static,
 {
     Ok(device.0.build_input_stream(
         &config.into(),
@@ -299,7 +295,7 @@ where
                     let data = data
                         .iter()
                         .map(|sample| S::from_sample(*sample))
-                        .collect::<Vec<S>>();
+                        .collect::<AudioSamples<S>>();
                     sender.send(data).unwrap();
                     waker.wake_by_ref();
                 }
@@ -314,7 +310,6 @@ impl<S> AudioInputStream<S>
 where
     S: Send
         + Sample
-        + hound::Sample
         + FromSample<i8>
         + FromSample<i16>
         + FromSample<i32>
@@ -345,25 +340,25 @@ where
         }
     }
 
-    pub async fn read(&mut self) -> Vec<S> {
+    pub async fn read(&mut self) -> AudioSamples<S> {
         let mut result = vec![];
         while let Some(data) = self.next().await {
-            result.extend(data.into_iter());
+            result.extend(data.iter());
         }
-        result
+        result.into_boxed_slice()
     }
 
-    pub async fn read_timeout(&mut self, timeout: Duration) -> Vec<S> {
+    pub async fn read_timeout(&mut self, timeout: Duration) -> AudioSamples<S> {
         let mut result = vec![];
         tokio::select! {
             _ = async {
                 while let Some(data) = self.next().await {
-                    result.extend(data.into_iter());
+                    result.extend(data.iter());
                 }
             } => {},
             _ = tokio::time::sleep(timeout) => {},
         };
-        result
+        result.into_boxed_slice()
     }
 }
 
@@ -385,14 +380,13 @@ impl<S> Stream for AudioInputStream<S>
 where
     S: Send
         + Sample
-        + hound::Sample
         + FromSample<i8>
         + FromSample<i16>
         + FromSample<i32>
         + FromSample<f32>
         + 'static,
 {
-    type Item = Vec<S>;
+    type Item = AudioSamples<S>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
