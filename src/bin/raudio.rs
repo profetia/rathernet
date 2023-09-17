@@ -2,7 +2,9 @@ use std::{fs::File, io::BufReader, path::PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use cpal::{traits::HostTrait, SupportedInputConfigs, SupportedOutputConfigs};
+use cpal::{
+    traits::HostTrait, SupportedInputConfigs, SupportedOutputConfigs, SupportedStreamConfig,
+};
 use hound::SampleFormat;
 use rathernet::raudio::{AsioDevice, AsioHost, AudioInputStream, AudioOutputStream, IntoSpec};
 use rodio::{Decoder, DeviceTrait};
@@ -88,10 +90,18 @@ async fn main() -> Result<()> {
             device,
             elapse,
         } => {
-            let stream = match device {
-                Some(name) => AudioOutputStream::try_from_name(&name)?,
-                None => AudioOutputStream::try_default()?,
+            let device = match device {
+                Some(name) => AsioDevice::try_from_name(&name)?,
+                None => AsioDevice::try_default()?,
             };
+            let default_config = device.0.default_output_config()?;
+            let config = SupportedStreamConfig::new(
+                1,
+                cpal::SampleRate(48000),
+                default_config.buffer_size().clone(),
+                default_config.sample_format(),
+            );
+            let stream = AudioOutputStream::try_from_device_config(&device, config)?;
             let file = BufReader::new(File::open(source)?);
             let source = Decoder::new(file)?;
             if let Some(duration) = elapse {
@@ -111,7 +121,14 @@ async fn main() -> Result<()> {
                 Some(name) => AsioDevice::try_from_name(&name)?,
                 None => AsioDevice::try_default()?,
             };
-            let mut stream = AudioInputStream::<f32>::try_from_device(&device)?;
+            let default_config = device.0.default_output_config()?;
+            let config = SupportedStreamConfig::new(
+                1,
+                cpal::SampleRate(48000),
+                default_config.buffer_size().clone(),
+                default_config.sample_format(),
+            );
+            let mut stream = AudioInputStream::<f32>::try_from_device_config(&device, config)?;
             let data = stream
                 .read_timeout(std::time::Duration::from_secs(elapse))
                 .await;
@@ -142,8 +159,16 @@ async fn main() -> Result<()> {
                 Some(name) => AsioDevice::try_from_name(&name)?,
                 None => AsioDevice::try_default()?,
             };
-            let mut read_stream = AudioInputStream::<f32>::try_from_device(&device)?;
-            let write_stream = AudioOutputStream::try_from_device(&device)?;
+            let default_config = device.0.default_output_config()?;
+            let config = SupportedStreamConfig::new(
+                1,
+                cpal::SampleRate(48000),
+                default_config.buffer_size().clone(),
+                default_config.sample_format(),
+            );
+            let mut read_stream =
+                AudioInputStream::<f32>::try_from_device_config(&device, config.clone())?;
+            let write_stream = AudioOutputStream::try_from_device_config(&device, config)?;
 
             let source = Decoder::new(BufReader::new(File::open(source)?))?;
 
@@ -169,7 +194,7 @@ async fn main() -> Result<()> {
         }
         Commands::List { r#type, config } => {
             let host = AsioHost::try_new()?;
-            for (index, device) in host.inner.devices()?.enumerate() {
+            for (index, device) in host.0.devices()?.enumerate() {
                 let name = device.name()?;
                 let input_configs = device.supported_input_configs().ok();
                 let output_configs = device.supported_output_configs().ok();

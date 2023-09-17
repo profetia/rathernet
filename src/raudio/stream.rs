@@ -15,7 +15,7 @@ use tokio_stream::{Stream, StreamExt};
 use anyhow::Result;
 use cpal::{
     traits::{DeviceTrait, StreamTrait},
-    FromSample, SampleFormat, SupportedStreamConfig, SupportedStreamConfigsError,
+    FromSample, SampleFormat, SizedSample, SupportedStreamConfig, SupportedStreamConfigsError,
 };
 use rodio::{Sample, Sink, Source};
 
@@ -80,16 +80,19 @@ where
         })
     }
 
+    pub fn try_from_device_config(
+        device: &AsioDevice,
+        config: SupportedStreamConfig,
+    ) -> Result<Self> {
+        Self::try_from_stream(AsioOutputStream::try_from_device_config(device, config)?)
+    }
+
     pub fn try_from_device(device: &AsioDevice) -> Result<Self> {
         Self::try_from_stream(AsioOutputStream::try_from_device(device)?)
     }
 
     pub fn try_default() -> Result<Self> {
         Self::try_from_stream(AsioOutputStream::try_default()?)
-    }
-
-    pub fn try_from_name(name: &str) -> Result<Self> {
-        Self::try_from_stream(AsioOutputStream::try_from_name(name)?)
     }
 }
 
@@ -233,39 +236,26 @@ where
         + FromSample<f32>
         + 'static,
 {
-    pub fn try_from_device(device: &AsioDevice) -> Result<Self> {
-        let config = device.inner.default_input_config()?;
+    pub fn try_from_device_config(
+        device: &AsioDevice,
+        config: SupportedStreamConfig,
+    ) -> Result<Self> {
         let (sender, reciever) = mpsc::channel::<Vec<S>>();
         let task = Arc::new(Mutex::new(AudioInputTaskState::Pending));
-        macro_rules! build_input_stream {
-            ($sample_type:ty) => {
-                device.inner.build_input_stream(
-                    &config.clone().into(),
-                    {
-                        let sender = sender.clone();
-                        let task = task.clone();
-                        move |data: &[$sample_type], _: _| {
-                            let guard = task.lock().unwrap();
-                            if let AudioInputTaskState::Running(ref waker) = *guard {
-                                let data = data
-                                    .iter()
-                                    .map(|sample| S::from_sample(*sample))
-                                    .collect::<Vec<S>>();
-                                sender.send(data).unwrap();
-                                waker.wake_by_ref();
-                            }
-                        }
-                    },
-                    |error| eprintln!("an error occurred on input stream: {}", error),
-                    None,
-                )
-            };
-        }
+
         let stream = match config.sample_format() {
-            SampleFormat::I8 => build_input_stream!(i8),
-            SampleFormat::I16 => build_input_stream!(i16),
-            SampleFormat::I32 => build_input_stream!(i32),
-            SampleFormat::F32 => build_input_stream!(f32),
+            SampleFormat::I8 => {
+                build_input_stream::<i8, S>(device, config.clone(), sender.clone(), task.clone())
+            }
+            SampleFormat::I16 => {
+                build_input_stream::<i16, S>(device, config.clone(), sender.clone(), task.clone())
+            }
+            SampleFormat::I32 => {
+                build_input_stream::<i32, S>(device, config.clone(), sender.clone(), task.clone())
+            }
+            SampleFormat::F32 => {
+                build_input_stream::<f32, S>(device, config.clone(), sender.clone(), task.clone())
+            }
             _ => return Err(SupportedStreamConfigsError::InvalidArgument.into()),
         }?;
 
@@ -279,15 +269,45 @@ where
         })
     }
 
+    pub fn try_from_device(device: &AsioDevice) -> Result<Self> {
+        let config = device.0.default_input_config()?;
+        Self::try_from_device_config(device, config)
+    }
+
     pub fn try_default() -> Result<Self> {
         let device = AsioDevice::try_default()?;
         Self::try_from_device(&device)
     }
+}
 
-    pub fn try_from_name(name: &str) -> Result<Self> {
-        let device = AsioDevice::try_from_name(name)?;
-        Self::try_from_device(&device)
-    }
+fn build_input_stream<T, S>(
+    device: &AsioDevice,
+    config: SupportedStreamConfig,
+    sender: Sender<Vec<S>>,
+    task: Arc<Mutex<AudioInputTaskState>>,
+) -> Result<cpal::Stream>
+where
+    T: SizedSample,
+    S: Send + Sample + hound::Sample + FromSample<T> + 'static,
+{
+    Ok(device.0.build_input_stream(
+        &config.into(),
+        {
+            move |data: &[T], _: _| {
+                let guard = task.lock().unwrap();
+                if let AudioInputTaskState::Running(ref waker) = *guard {
+                    let data = data
+                        .iter()
+                        .map(|sample| S::from_sample(*sample))
+                        .collect::<Vec<S>>();
+                    sender.send(data).unwrap();
+                    waker.wake_by_ref();
+                }
+            }
+        },
+        |error| eprintln!("an error occurred on input stream: {}", error),
+        None,
+    )?)
 }
 
 impl<S> AudioInputStream<S>

@@ -2,6 +2,7 @@ use std::f32::consts::PI;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use cpal::SupportedStreamConfig;
 use hound::SampleFormat;
 use rathernet::raudio::{AsioDevice, AudioOutputStream, IntoSpec, Track};
 use rodio::DeviceTrait;
@@ -33,8 +34,14 @@ async fn calibrate(elapse: u64, device: Option<String>) -> Result<()> {
         Some(name) => AsioDevice::try_from_name(&name)?,
         None => AsioDevice::try_default()?,
     };
-    let config = device.inner.default_output_config()?;
-    let stream = AudioOutputStream::try_from_device(&device)?;
+    let default_config = device.0.default_output_config()?;
+    let config = SupportedStreamConfig::new(
+        1,
+        cpal::SampleRate(48000),
+        default_config.buffer_size().clone(),
+        default_config.sample_format(),
+    );
+    let stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
 
     let sample_rate = config.sample_rate().0;
     let signal_len = (sample_rate as u64 * elapse) as usize;
