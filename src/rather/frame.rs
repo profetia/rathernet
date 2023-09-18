@@ -1,9 +1,7 @@
-use std::time::Duration;
-
+use crate::raudio::{AudioTrack, SharedSamples};
 use cpal::SupportedStreamConfig;
 use rodio::Source;
-
-use crate::raudio::{AudioTrack, SharedSamples};
+use std::time::Duration;
 
 pub type Header = SharedSamples<f32>;
 pub type Symbol = SharedSamples<f32>;

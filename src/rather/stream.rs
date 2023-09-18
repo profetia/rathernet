@@ -1,10 +1,7 @@
-use std::f32::consts::PI;
-
-use cpal::SupportedStreamConfig;
-
-use crate::raudio::AudioOutputStream;
-
 use super::{Frame, Header, Symbol};
+use crate::raudio::AudioOutputStream;
+use cpal::SupportedStreamConfig;
+use std::f32::consts::PI;
 
 pub struct AtherStreamConfig {
     pub frequency: u32,
