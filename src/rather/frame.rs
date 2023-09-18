@@ -3,7 +3,7 @@ use std::time::Duration;
 use cpal::SupportedStreamConfig;
 use rodio::Source;
 
-use crate::raudio::SharedSamples;
+use crate::raudio::{AudioTrack, SharedSamples};
 
 pub type Header = SharedSamples<f32>;
 pub type Symbol = SharedSamples<f32>;
@@ -109,5 +109,13 @@ impl Source for Frame {
                     .sum::<f32>()
                     / (self.config.sample_rate().0 as f32 * self.config.channels() as f32),
         ))
+    }
+}
+
+impl From<Frame> for AudioTrack<f32> {
+    fn from(value: Frame) -> Self {
+        let mut source = value.header.to_vec();
+        source.extend(value.body.concat());
+        AudioTrack::new(value.config, source.into())
     }
 }
