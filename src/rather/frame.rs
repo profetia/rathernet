@@ -1,10 +1,52 @@
 use crate::raudio::{AudioTrack, SharedSamples};
 use cpal::SupportedStreamConfig;
 use rodio::Source;
-use std::time::Duration;
+use std::{f32::consts::PI, time::Duration};
 
-pub type Header = SharedSamples<f32>;
-pub type Symbol = SharedSamples<f32>;
+#[derive(Debug, Clone)]
+pub struct Header(SharedSamples<f32>);
+
+impl Header {
+    pub fn new(sample_rate: u32, duration: f32) -> Self {
+        let len = 8 * (duration * sample_rate as f32) as u32;
+        let header = (0..len)
+            .map(|item| {
+                if item < len / 2 {
+                    2000.0 + item as f32 * 6000.0 / (len / 2) as f32
+                } else {
+                    8000.0 - (item - len / 2) as f32 * 6000.0 / (len / 2) as f32
+                }
+            })
+            .scan(0.0f32, |acc, item| {
+                *acc += item / sample_rate as f32;
+                Some(*acc)
+            })
+            .map(|item| (item * 2.0 * PI).sin())
+            .collect::<SharedSamples<f32>>();
+        Self(header)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Symbol(SharedSamples<f32>);
+
+impl Symbol {
+    pub fn new(frequency: u32, sample_rate: u32, duration: f32) -> (Self, Self) {
+        let zero = (0..(duration * sample_rate as f32) as usize)
+            .map(|item| {
+                let t = item as f32 * 2.0 * PI / sample_rate as f32;
+                (t * frequency as f32).sin()
+            })
+            .collect::<SharedSamples<f32>>();
+        let one = zero
+            .iter()
+            .map(|item| -item)
+            .collect::<SharedSamples<f32>>();
+
+        (Self(zero), Self(one))
+    }
+}
+
 pub type Body = Vec<Symbol>;
 
 #[derive(Debug, Clone)]
@@ -39,8 +81,8 @@ impl Iterator for Frame {
     fn next(&mut self) -> Option<Self::Item> {
         match self.state {
             FrameState::Header(i) => {
-                if i < self.header.len() {
-                    let sample = self.header[i];
+                if i < self.header.0.len() {
+                    let sample = self.header.0[i];
                     self.state = FrameState::Header(i + 1);
                     Some(sample)
                 } else {
@@ -51,8 +93,8 @@ impl Iterator for Frame {
             FrameState::Samples(i, j) => {
                 if i < self.body.len() {
                     let symbol = &self.body[i];
-                    if j < symbol.len() {
-                        let sample = symbol[j];
+                    if j < symbol.0.len() {
+                        let sample = symbol.0[j];
                         self.state = FrameState::Samples(i, j + 1);
                         Some(sample)
                     } else {
@@ -75,16 +117,16 @@ impl Source for Frame {
             FrameState::Header(i) => self
                 .body
                 .iter()
-                .map(|symbol| symbol.len())
+                .map(|symbol| symbol.0.len())
                 .sum::<usize>()
-                .checked_add(self.header.len() - i),
+                .checked_add(self.header.0.len() - i),
             FrameState::Samples(i, j) => self
                 .body
                 .iter()
                 .skip(i)
-                .map(|symbol| symbol.len())
+                .map(|symbol| symbol.0.len())
                 .sum::<usize>()
-                .checked_add(self.body[i].len() - j),
+                .checked_add(self.body[i].0.len() - j),
             FrameState::Complete => Some(0),
         }
     }
@@ -99,11 +141,11 @@ impl Source for Frame {
 
     fn total_duration(&self) -> Option<Duration> {
         Some(Duration::from_secs_f32(
-            self.header.len() as f32
+            self.header.0.len() as f32
                 + self
                     .body
                     .iter()
-                    .map(|symbol| symbol.len() as f32)
+                    .map(|symbol| symbol.0.len() as f32)
                     .sum::<f32>()
                     / (self.config.sample_rate().0 as f32 * self.config.channels() as f32),
         ))
@@ -112,8 +154,10 @@ impl Source for Frame {
 
 impl From<Frame> for AudioTrack<f32> {
     fn from(value: Frame) -> Self {
-        let mut source = value.header.to_vec();
-        source.extend(value.body.concat());
+        let mut source = value.header.0.to_vec();
+        for symbol in value.body.into_iter() {
+            source.extend(symbol.0.iter());
+        }
         AudioTrack::new(value.config, source.into())
     }
 }
