@@ -108,7 +108,7 @@ where
         }
     }
 
-    pub async fn write_timeout(&self, source: S, timeout: std::time::Duration) {
+    pub async fn write_timeout(&self, source: S, timeout: Duration) {
         let write_future = self.write(source);
         let timeout_future = tokio::time::sleep(timeout);
         tokio::select! {
