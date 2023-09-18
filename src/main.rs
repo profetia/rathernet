@@ -16,8 +16,8 @@ async fn main() -> Result<()> {
         default_config.buffer_size().clone(),
         default_config.sample_format(),
     );
-    let stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
-    let ather = AtherOutputStream::new(AtherStreamConfig::new(10000, 1000, config), stream);
+
+    let config = AtherStreamConfig::new(10000, 1000, config);
 
     Ok(())
 }
