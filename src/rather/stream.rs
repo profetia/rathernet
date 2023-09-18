@@ -1,3 +1,13 @@
+//! # Rather Streams
+//! Rather streams are used to send and receive data on an ather. The data is encoded in the form of
+//! audio signals in the method of phase shift keying (PSK). The stream is composed of a header
+//! (8 symbols), a length field (7 symbols with 1 parity symbol), a body (n symbols with
+//! maximum 128 symbols) and a checksum field (8 symbols). The header is used to identify the
+//! start of a stream. The length field is used to indicate the length of the body. The checksum
+//! field is used to verify the integrity of the stream. The body is the actual data to be sent.
+
+// TODO: implement length field and checksum field
+
 use super::{Frame, Header, Symbol};
 use crate::raudio::AudioOutputStream;
 use bitvec::slice::BitSlice;
