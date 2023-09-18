@@ -217,7 +217,7 @@ where
 
 pub struct AudioInputStream<S: Sample> {
     stream: cpal::Stream,
-    _config: SupportedStreamConfig,
+    config: SupportedStreamConfig,
     task: AudioInputTask,
     reciever: Receiver<AudioSamples<S>>,
 }
@@ -259,7 +259,7 @@ where
 
         Ok(AudioInputStream {
             stream,
-            _config: config,
+            config,
             task,
             reciever,
         })
@@ -317,7 +317,7 @@ where
         + 'static,
 {
     pub fn config(&self) -> &SupportedStreamConfig {
-        &self._config
+        &self.config
     }
 
     pub fn suspend(&self) {
