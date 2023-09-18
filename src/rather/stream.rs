@@ -1,7 +1,8 @@
 use super::{Frame, Header, Symbol};
 use crate::raudio::AudioOutputStream;
+use bitvec::slice::BitSlice;
 use cpal::SupportedStreamConfig;
-use std::f32::consts::PI;
+use std::{f32::consts::PI, time::Duration};
 
 pub struct AtherStreamConfig {
     pub frequency: u32,
@@ -12,11 +13,7 @@ pub struct AtherStreamConfig {
 }
 
 impl AtherStreamConfig {
-    pub fn new(stream_config: SupportedStreamConfig) -> Self {
-        let frequency = 10000u32;
-        let bit_rate = 1000u32;
-        let header_len = 480u32;
-
+    pub fn new(frequency: u32, bit_rate: u32, stream_config: SupportedStreamConfig) -> Self {
         let elapse = 1.0 / bit_rate as f32;
         let sample_rate = stream_config.sample_rate().0;
         let symbol_zero = (0..(elapse * sample_rate as f32) as usize)
@@ -27,6 +24,7 @@ impl AtherStreamConfig {
             .collect::<Symbol>();
         let symbol_one = symbol_zero.iter().map(|item| -item).collect::<Symbol>();
 
+        let header_len = 10 * (elapse * sample_rate as f32) as u32;
         let header = (0..header_len)
             .map(|item| {
                 if item < header_len / 2 {
@@ -60,5 +58,33 @@ pub struct AtherOutputStream {
 impl AtherOutputStream {
     pub fn new(config: AtherStreamConfig, stream: AudioOutputStream<Frame>) -> Self {
         Self { config, stream }
+    }
+}
+
+impl AtherOutputStream {
+    fn encode(&self, bits: &BitSlice) -> Frame {
+        let mut body = vec![];
+        for bit in bits {
+            if *bit {
+                body.push(self.config.symbols.1.clone());
+            } else {
+                body.push(self.config.symbols.0.clone());
+            }
+        }
+        Frame::new(
+            self.config.stream_config.clone(),
+            self.config.header.clone(),
+            body,
+        )
+    }
+
+    pub async fn write(&self, bits: &BitSlice) {
+        let frame = self.encode(bits);
+        self.stream.write(frame).await;
+    }
+
+    pub async fn write_timeout(&self, bits: &BitSlice, timeout: Duration) {
+        let frame = self.encode(bits);
+        self.stream.write_timeout(frame, timeout).await;
     }
 }
