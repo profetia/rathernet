@@ -1,3 +1,10 @@
+use super::{asio::AsioOutputStream, AsioDevice, AudioSamples};
+use anyhow::Result;
+use cpal::{
+    traits::{DeviceTrait, StreamTrait},
+    FromSample, SampleFormat, SizedSample, SupportedStreamConfig, SupportedStreamConfigsError,
+};
+use rodio::{Sample, Sink, Source};
 use std::{
     future::Future,
     mem,
@@ -9,17 +16,7 @@ use std::{
     thread,
     time::Duration,
 };
-
 use tokio_stream::{Stream, StreamExt};
-
-use anyhow::Result;
-use cpal::{
-    traits::{DeviceTrait, StreamTrait},
-    FromSample, SampleFormat, SizedSample, SupportedStreamConfig, SupportedStreamConfigsError,
-};
-use rodio::{Sample, Sink, Source};
-
-use super::{asio::AsioOutputStream, AsioDevice, AudioSamples};
 
 pub struct AudioOutputStream<S>
 where

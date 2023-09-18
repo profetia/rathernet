@@ -1,9 +1,8 @@
-use std::{path::Path, sync::Arc, time::Duration};
-
 use anyhow::Result;
 use cpal::SupportedStreamConfig;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use rodio::{Sample, Source};
+use std::{path::Path, sync::Arc, time::Duration};
 
 pub type AudioSamples<S> = Box<[S]>;
 pub type SharedSamples<S> = Arc<[S]>;
