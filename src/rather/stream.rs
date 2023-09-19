@@ -2,7 +2,7 @@
 //! Rather streams are used to send and receive data on an ather. The data is encoded in the form of
 //! audio signals in the method of phase shift keying (PSK). The stream is composed of a header
 //! (8 symbols), a length field (7 symbols with 1 parity symbol), a body (n symbols with
-//! maximum 128 symbols) and a checksum field (8 symbols). The header is used to identify the
+//! maximum 127 symbols) and a checksum field (8 symbols). The header is used to identify the
 //! start of a stream. The length field is used to indicate the length of the body. The checksum
 //! field is used to verify the integrity of the stream. The body is the actual data to be sent.
 
@@ -51,9 +51,19 @@ impl AtherOutputStream {
 impl AtherOutputStream {
     fn encode(&self, bits: &BitSlice) -> Vec<Frame> {
         let mut frames = vec![];
-        for chunk in bits.chunks(128) {
+        for chunk in bits.chunks(127) {
             let payload = chunk.encode(self.config.symbols.clone());
-            let length = (bits.len() as u8).encode(self.config.symbols.clone());
+            let length = (chunk.len() as u8).encode(self.config.symbols.clone())[..7].to_owned();
+
+            frames.push(Frame::new(
+                self.config.stream_config.clone(),
+                Header::new(self.config.preamble.clone(), length),
+                Body::new(payload),
+            ));
+        }
+        if bits.len() % 127 == 0 {
+            let payload = vec![];
+            let length = 0u8.encode(self.config.symbols.clone())[..7].to_owned();
 
             frames.push(Frame::new(
                 self.config.stream_config.clone(),
@@ -93,7 +103,6 @@ impl AtherEncoding for u8 {
     fn encode(&self, symbols: (Symbol, Symbol)) -> Vec<Symbol> {
         self.view_bits::<Lsb0>()
             .into_iter()
-            .take(7)
             .map(|bit| {
                 if *bit {
                     symbols.1.clone()
