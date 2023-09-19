@@ -1,3 +1,4 @@
+mod corr;
 mod frame;
 mod stream;
 
