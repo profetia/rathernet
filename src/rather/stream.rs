@@ -8,16 +8,16 @@
 
 // TODO: implement length field and checksum field
 
-use super::{Frame, Header, Symbol};
+use super::{frame::Header, Body, Frame, Preamble, Symbol};
 use crate::raudio::AudioOutputStream;
-use bitvec::slice::BitSlice;
+use bitvec::prelude::*;
 use cpal::SupportedStreamConfig;
 use std::time::Duration;
 
 pub struct AtherStreamConfig {
     pub frequency: u32,
     pub bit_rate: u32,
-    pub header: Header,
+    pub preamble: Preamble,
     pub symbols: (Symbol, Symbol),
     pub stream_config: SupportedStreamConfig,
 }
@@ -30,7 +30,7 @@ impl AtherStreamConfig {
         Self {
             frequency,
             bit_rate,
-            header: Header::new(sample_rate, duration),
+            preamble: Preamble::new(sample_rate, duration),
             symbols: Symbol::new(frequency, sample_rate, duration),
             stream_config,
         }
@@ -49,29 +49,72 @@ impl AtherOutputStream {
 }
 
 impl AtherOutputStream {
-    fn encode(&self, bits: &BitSlice) -> Frame {
-        let mut body = vec![];
-        for bit in bits {
-            if *bit {
-                body.push(self.config.symbols.1.clone());
-            } else {
-                body.push(self.config.symbols.0.clone());
-            }
+    fn encode(&self, bits: &BitSlice) -> Vec<Frame> {
+        let mut frames = vec![];
+        for chunk in bits.chunks(128) {
+            let payload = chunk.encode(self.config.symbols.clone());
+            let length = (bits.len() as u8).encode(self.config.symbols.clone());
+
+            frames.push(Frame::new(
+                self.config.stream_config.clone(),
+                Header::new(self.config.preamble.clone(), length),
+                Body::new(payload),
+            ));
         }
-        Frame::new(
-            self.config.stream_config.clone(),
-            self.config.header.clone(),
-            body,
-        )
+
+        frames
     }
 
     pub async fn write(&self, bits: &BitSlice) {
-        let frame = self.encode(bits);
-        self.stream.write(frame).await;
+        let frames = self.encode(bits);
+        for frame in frames {
+            self.stream.write(frame).await;
+        }
     }
 
     pub async fn write_timeout(&self, bits: &BitSlice, timeout: Duration) {
-        let frame = self.encode(bits);
-        self.stream.write_timeout(frame, timeout).await;
+        let frames = self.encode(bits);
+        tokio::select! {
+            _ = async {
+                for frame in frames {
+                    self.stream.write(frame).await;
+                }
+            } => {}
+            _ = tokio::time::sleep(timeout) => {}
+        };
+    }
+}
+
+trait AtherEncoding {
+    fn encode(&self, symbols: (Symbol, Symbol)) -> Vec<Symbol>;
+}
+
+impl AtherEncoding for u8 {
+    fn encode(&self, symbols: (Symbol, Symbol)) -> Vec<Symbol> {
+        self.view_bits::<Lsb0>()
+            .into_iter()
+            .take(7)
+            .map(|bit| {
+                if *bit {
+                    symbols.1.clone()
+                } else {
+                    symbols.0.clone()
+                }
+            })
+            .collect::<Vec<Symbol>>()
+    }
+}
+
+impl AtherEncoding for BitSlice {
+    fn encode(&self, symbols: (Symbol, Symbol)) -> Vec<Symbol> {
+        let mut samples = vec![];
+        for bit in self {
+            if *bit {
+                samples.push(symbols.1.clone());
+            } else {
+                samples.push(symbols.0.clone());
+            }
+        }
+        samples
     }
 }

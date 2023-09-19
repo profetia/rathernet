@@ -1,15 +1,15 @@
-use crate::raudio::{AudioTrack, SharedSamples};
+use crate::raudio::{AudioSamples, AudioTrack, SharedSamples};
 use cpal::SupportedStreamConfig;
 use rodio::Source;
 use std::{f32::consts::PI, time::Duration};
 
 #[derive(Debug, Clone)]
-pub struct Header(SharedSamples<f32>);
+pub struct Preamble(SharedSamples<f32>);
 
-impl Header {
+impl Preamble {
     pub fn new(sample_rate: u32, duration: f32) -> Self {
         let len = 8 * (duration * sample_rate as f32) as u32;
-        let header = (0..len)
+        let preamble = (0..len)
             .map(|item| {
                 if item < len / 2 {
                     2000.0 + item as f32 * 6000.0 / (len / 2) as f32
@@ -23,7 +23,87 @@ impl Header {
             })
             .map(|item| (item * 2.0 * PI).sin())
             .collect::<SharedSamples<f32>>();
-        Self(header)
+        Self(preamble)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Header {
+    preamble: Preamble,
+    length: Vec<Symbol>,
+    state: HeaderState,
+}
+
+#[derive(Debug, Clone)]
+enum HeaderState {
+    Preamble(usize),
+    Length(usize, usize),
+    Completed,
+}
+
+impl Header {
+    pub fn new(preamble: Preamble, length: Vec<Symbol>) -> Self {
+        Self {
+            preamble,
+            length,
+            state: HeaderState::Preamble(0),
+        }
+    }
+}
+
+impl Iterator for Header {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.state {
+            HeaderState::Preamble(offset) => {
+                if offset < self.preamble.0.len() {
+                    self.state = HeaderState::Preamble(offset + 1);
+                    Some(self.preamble.0[offset])
+                } else {
+                    self.state = HeaderState::Length(0, 0);
+                    self.next()
+                }
+            }
+            HeaderState::Length(index, offset) => {
+                if index < self.length.len() {
+                    if offset < self.length[index].0.len() {
+                        self.state = HeaderState::Length(index, offset + 1);
+                        Some(self.length[index].0[offset])
+                    } else {
+                        self.state = HeaderState::Length(index + 1, 0);
+                        self.next()
+                    }
+                } else {
+                    self.state = HeaderState::Completed;
+                    None
+                }
+            }
+            HeaderState::Completed => None,
+        }
+    }
+}
+
+impl ExactSizeIterator for Header {
+    fn len(&self) -> usize {
+        match self.state {
+            HeaderState::Preamble(offset) => {
+                self.length
+                    .iter()
+                    .map(|symbol| symbol.0.len())
+                    .sum::<usize>()
+                    + (self.preamble.0.len() - offset)
+            }
+            HeaderState::Length(index, offset) => {
+                self.length
+                    .iter()
+                    .skip(index)
+                    .map(|symbol| symbol.0.len())
+                    .sum::<usize>()
+                    + (self.length[index].0.len() - offset)
+            }
+            HeaderState::Completed => 0,
+        }
     }
 }
 
@@ -47,7 +127,66 @@ impl Symbol {
     }
 }
 
-pub type Body = Vec<Symbol>;
+#[derive(Debug, Clone)]
+pub struct Body {
+    payload: Vec<Symbol>,
+    state: BodyState,
+}
+
+#[derive(Debug, Clone)]
+enum BodyState {
+    Payload(usize, usize),
+    Completed,
+}
+
+impl Body {
+    pub fn new(payload: Vec<Symbol>) -> Self {
+        Self {
+            payload,
+            state: BodyState::Payload(0, 0),
+        }
+    }
+}
+
+impl Iterator for Body {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.state {
+            BodyState::Payload(index, offset) => {
+                if index < self.payload.len() {
+                    if offset < self.payload[index].0.len() {
+                        self.state = BodyState::Payload(index, offset + 1);
+                        Some(self.payload[index].0[offset])
+                    } else {
+                        self.state = BodyState::Payload(index + 1, 0);
+                        self.next()
+                    }
+                } else {
+                    self.state = BodyState::Completed;
+                    None
+                }
+            }
+            BodyState::Completed => None,
+        }
+    }
+}
+
+impl ExactSizeIterator for Body {
+    fn len(&self) -> usize {
+        match self.state {
+            BodyState::Payload(index, offset) => {
+                self.payload
+                    .iter()
+                    .skip(index)
+                    .map(|symbol| symbol.0.len())
+                    .sum::<usize>()
+                    + (self.payload[index].0.len() - offset)
+            }
+            BodyState::Completed => 0,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Frame {
@@ -57,11 +196,11 @@ pub struct Frame {
     state: FrameState,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum FrameState {
-    Header(usize),
-    Samples(usize, usize),
-    Complete,
+    Header,
+    Body,
+    Completed,
 }
 
 impl Frame {
@@ -70,7 +209,7 @@ impl Frame {
             config,
             header,
             body,
-            state: FrameState::Header(0),
+            state: FrameState::Header,
         }
     }
 }
@@ -80,55 +219,36 @@ impl Iterator for Frame {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.state {
-            FrameState::Header(i) => {
-                if i < self.header.0.len() {
-                    let sample = self.header.0[i];
-                    self.state = FrameState::Header(i + 1);
-                    Some(sample)
+            FrameState::Header => {
+                if let Some(item) = self.header.next() {
+                    Some(item)
                 } else {
-                    self.state = FrameState::Samples(0, 0);
+                    self.state = FrameState::Body;
                     self.next()
                 }
             }
-            FrameState::Samples(i, j) => {
-                if i < self.body.len() {
-                    let symbol = &self.body[i];
-                    if j < symbol.0.len() {
-                        let sample = symbol.0[j];
-                        self.state = FrameState::Samples(i, j + 1);
-                        Some(sample)
-                    } else {
-                        self.state = FrameState::Samples(i + 1, 0);
-                        self.next()
-                    }
+            FrameState::Body => {
+                if let Some(item) = self.body.next() {
+                    Some(item)
                 } else {
-                    self.state = FrameState::Complete;
+                    self.state = FrameState::Completed;
                     None
                 }
             }
-            FrameState::Complete => None,
+            FrameState::Completed => None,
         }
+    }
+}
+
+impl ExactSizeIterator for Frame {
+    fn len(&self) -> usize {
+        self.header.len() + self.body.len()
     }
 }
 
 impl Source for Frame {
     fn current_frame_len(&self) -> Option<usize> {
-        match self.state {
-            FrameState::Header(i) => self
-                .body
-                .iter()
-                .map(|symbol| symbol.0.len())
-                .sum::<usize>()
-                .checked_add(self.header.0.len() - i),
-            FrameState::Samples(i, j) => self
-                .body
-                .iter()
-                .skip(i)
-                .map(|symbol| symbol.0.len())
-                .sum::<usize>()
-                .checked_add(self.body[i].0.len() - j),
-            FrameState::Complete => Some(0),
-        }
+        Some(self.len())
     }
 
     fn channels(&self) -> u16 {
@@ -140,24 +260,42 @@ impl Source for Frame {
     }
 
     fn total_duration(&self) -> Option<Duration> {
+        let header_len = self.header.preamble.0.len()
+            + self
+                .header
+                .length
+                .iter()
+                .map(|symbol| symbol.0.len())
+                .sum::<usize>();
+        let body_len = self
+            .body
+            .payload
+            .iter()
+            .map(|symbol| symbol.0.len())
+            .sum::<usize>();
         Some(Duration::from_secs_f32(
-            self.header.0.len() as f32
-                + self
-                    .body
-                    .iter()
-                    .map(|symbol| symbol.0.len() as f32)
-                    .sum::<f32>()
-                    / (self.config.sample_rate().0 as f32 * self.config.channels() as f32),
+            (header_len + body_len) as f32
+                / (self.config.sample_rate().0 as f32 * self.config.channels() as f32),
         ))
     }
 }
 
 impl From<Frame> for AudioTrack<f32> {
     fn from(value: Frame) -> Self {
-        let mut source = value.header.0.to_vec();
-        for symbol in value.body.into_iter() {
-            source.extend(symbol.0.iter());
+        let config = value.config.clone();
+        AudioTrack::new(config, value.into())
+    }
+}
+
+impl From<Frame> for AudioSamples<f32> {
+    fn from(value: Frame) -> Self {
+        let mut source = value.header.preamble.0.to_vec();
+        for symbol in value.header.length.iter() {
+            source.extend(symbol.0.to_vec());
         }
-        AudioTrack::new(value.config, source.into())
+        for symbol in value.body.payload.iter() {
+            source.extend(symbol.0.to_vec());
+        }
+        source.into()
     }
 }
