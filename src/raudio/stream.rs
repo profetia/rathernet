@@ -325,6 +325,7 @@ where
                 *guard = AudioInputTaskState::Suspended;
                 waker.wake();
             }
+            AudioInputTaskState::Pending => *guard = AudioInputTaskState::Suspended,
             content => *guard = content,
         }
     }
@@ -396,11 +397,17 @@ where
                 self.stream.play().unwrap();
                 Poll::Pending
             }
-            AudioInputTaskState::Running(_) => {
-                *guard = AudioInputTaskState::Running(cx.waker().clone());
+            AudioInputTaskState::Running(_) => {                
                 match self.reciever.try_recv() {
-                    Ok(data) => Poll::Ready(Some(data)),
-                    Err(_) => Poll::Pending,
+                    Ok(data) => {
+                        self.stream.pause().unwrap();
+                        *guard = AudioInputTaskState::Pending;
+                        Poll::Ready(Some(data))
+                    },
+                    Err(_) => {
+                        *guard = AudioInputTaskState::Running(cx.waker().clone());
+                        Poll::Pending
+                    },
                 }
             }
             AudioInputTaskState::Suspended => Poll::Ready(None),
