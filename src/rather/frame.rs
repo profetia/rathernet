@@ -4,11 +4,11 @@ use rodio::Source;
 use std::{f32::consts::PI, time::Duration};
 
 #[derive(Debug, Clone)]
-pub struct Preamble(SharedSamples<f32>);
+pub struct Preamble(pub SharedSamples<f32>);
 
 impl Preamble {
-    pub fn new(sample_rate: u32, duration: f32) -> Self {
-        let len = 8 * (duration * sample_rate as f32) as u32;
+    pub fn new(preamble_len: usize, sample_rate: u32, duration: f32) -> Self {
+        let len = preamble_len as u32 * (duration * sample_rate as f32) as u32;
         let preamble = (0..len)
             .map(|item| {
                 if item < len / 2 {
@@ -108,7 +108,7 @@ impl ExactSizeIterator for Header {
 }
 
 #[derive(Debug, Clone)]
-pub struct Symbol(SharedSamples<f32>);
+pub struct Symbol(pub SharedSamples<f32>);
 
 impl Symbol {
     pub fn new(frequency: u32, sample_rate: u32, duration: f32) -> (Self, Self) {
