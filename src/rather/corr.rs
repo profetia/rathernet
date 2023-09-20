@@ -96,6 +96,16 @@ impl Normalize<Vec<f32>> for Vec<f32> {
     }
 }
 
+pub fn synchronize(volume: &[f32], kernel: &[f32]) -> (isize, f32) {
+    let corr = correlate(volume, kernel);
+    let (index, max) = corr.argmax();
+    (kernel.len() as isize - 1 - index as isize, max)
+}
+
+pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b.iter()).fold(0., |acc, (a, b)| acc + a * b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,12 +115,10 @@ mod tests {
         let a: Vec<f32> = vec![0., 0., 0., 0., 0., 1., 2., 3., 4., 3., 2., 1., 0.];
         let b: Vec<f32> = vec![1., 2., 3., 4., 3., 2., 1.];
 
-        let c = correlate(&b, &a);
-        let (index, _) = c.argmax();
-        assert_eq!(a.len() as isize - 1 - index as isize, 5);
+        let (index, _) = synchronize(&b, &a);
+        assert_eq!(index, 5);
 
-        let c = correlate(&a, &b);
-        let (index, _) = c.argmax();
-        assert_eq!(b.len() as isize - 1 - index as isize, -5);
+        let (index, _) = synchronize(&a, &b);
+        assert_eq!(index, -5);
     }
 }
