@@ -317,27 +317,6 @@ where
         &self.config
     }
 
-    pub fn suspend(&self) {
-        let mut guard = self.task.lock().unwrap();
-        match guard.take() {
-            AudioInputTaskState::Running(waker) => {
-                self.stream.pause().unwrap();
-                *guard = AudioInputTaskState::Suspended;
-                waker.wake();
-            }
-            AudioInputTaskState::Pending => *guard = AudioInputTaskState::Suspended,
-            content => *guard = content,
-        }
-    }
-
-    pub fn resume(&self) {
-        let mut guard = self.task.lock().unwrap();
-        match guard.take() {
-            AudioInputTaskState::Suspended => *guard = AudioInputTaskState::Pending,
-            content => *guard = content,
-        }
-    }
-
     pub async fn read(&mut self) -> AudioSamples<S> {
         let mut result = vec![];
         while let Some(data) = self.next().await {
@@ -405,6 +384,51 @@ where
                 }
             }
             AudioInputTaskState::Suspended => Poll::Ready(None),
+        }
+    }
+}
+
+/// Continuous Stream is a stream that is only lazy when it is polled for the first time.
+/// After that, it will keep running until it is suspended. Once it is suspended, it will
+/// yield `None` until it is resumed. Resuming the stream will reset the stream to its
+/// initial state, and it will be lazy again until it is polled for the first time.
+pub trait ContinuousStream: Stream
+where
+    Self: Sized,
+{
+    fn suspend(&self);
+
+    fn resume(&self);
+}
+
+impl<S> ContinuousStream for AudioInputStream<S>
+where
+    S: Send
+        + Sample
+        + FromSample<i8>
+        + FromSample<i16>
+        + FromSample<i32>
+        + FromSample<f32>
+        + 'static,
+{
+    fn suspend(&self) {
+        let mut guard = self.task.lock().unwrap();
+        match guard.take() {
+            AudioInputTaskState::Running(waker) => {
+                self.stream.pause().unwrap();
+                *guard = AudioInputTaskState::Suspended;
+                waker.wake();
+            }
+            AudioInputTaskState::Pending => *guard = AudioInputTaskState::Suspended,
+            content => *guard = content,
+        }
+    }
+
+    fn resume(&self) {
+        let mut guard = self.task.lock().unwrap();
+        match guard.take() {
+            AudioInputTaskState::Suspended => *guard = AudioInputTaskState::Pending,
+            content => *guard = content,
         }
     }
 }
