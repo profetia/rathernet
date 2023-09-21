@@ -51,6 +51,10 @@ pub fn correlate(volume: &[f32], kernel: &[f32]) -> Box<[f32]> {
         .collect::<Vec<_>>();
 
     irfft(&corr_ifft, full)
+        .iter()
+        .copied()
+        .map(|item| item / full as f32)
+        .collect()
 }
 
 pub trait ArgMax<T>
@@ -115,10 +119,12 @@ mod tests {
         let a: Vec<f32> = vec![0., 0., 0., 0., 0., 1., 2., 3., 4., 3., 2., 1., 0.];
         let b: Vec<f32> = vec![1., 2., 3., 4., 3., 2., 1.];
 
-        let (index, _) = synchronize(&b, &a);
+        let (index, value) = synchronize(&b, &a);
         assert_eq!(index, 5);
+        assert!((-1. ..=1.).contains(&value));
 
-        let (index, _) = synchronize(&a, &b);
+        let (index, value) = synchronize(&a, &b);
         assert_eq!(index, -5);
+        assert!((-1. ..=1.).contains(&value));
     }
 }
