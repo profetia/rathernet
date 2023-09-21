@@ -135,15 +135,19 @@ pub struct Body {
 
 #[derive(Debug, Clone)]
 enum BodyState {
-    Payload(usize, usize),
+    Payload(Option<(usize, usize)>),
     Completed,
 }
 
 impl Body {
     pub fn new(payload: Vec<Symbol>) -> Self {
         Self {
+            state: BodyState::Payload(if !payload.is_empty() {
+                Some((0, 0))
+            } else {
+                None
+            }),
             payload,
-            state: BodyState::Payload(0, 0),
         }
     }
 }
@@ -153,18 +157,23 @@ impl Iterator for Body {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.state {
-            BodyState::Payload(index, offset) => {
-                if index < self.payload.len() {
-                    if offset < self.payload[index].0.len() {
-                        self.state = BodyState::Payload(index, offset + 1);
-                        Some(self.payload[index].0[offset])
+            BodyState::Payload(payload) => {
+                if let Some((index, offset)) = payload {
+                    if index < self.payload.len() {
+                        if offset < self.payload[index].0.len() {
+                            self.state = BodyState::Payload(Some((index, offset + 1)));
+                            Some(self.payload[index].0[offset])
+                        } else {
+                            self.state = BodyState::Payload(Some((index + 1, 0)));
+                            self.next()
+                        }
                     } else {
-                        self.state = BodyState::Payload(index + 1, 0);
+                        self.state = BodyState::Completed;
                         self.next()
                     }
                 } else {
                     self.state = BodyState::Completed;
-                    None
+                    self.next()
                 }
             }
             BodyState::Completed => None,
@@ -175,13 +184,17 @@ impl Iterator for Body {
 impl ExactSizeIterator for Body {
     fn len(&self) -> usize {
         match self.state {
-            BodyState::Payload(index, offset) => {
-                self.payload
-                    .iter()
-                    .skip(index)
-                    .map(|symbol| symbol.0.len())
-                    .sum::<usize>()
-                    + (self.payload[index].0.len() - offset)
+            BodyState::Payload(payload) => {
+                if let Some((index, offset)) = payload {
+                    self.payload
+                        .iter()
+                        .skip(index)
+                        .map(|symbol| symbol.0.len())
+                        .sum::<usize>()
+                        + (self.payload[index].0.len() - offset)
+                } else {
+                    0
+                }
             }
             BodyState::Completed => 0,
         }
