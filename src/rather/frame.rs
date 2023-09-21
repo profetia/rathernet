@@ -4,6 +4,32 @@ use rodio::Source;
 use std::{f32::consts::PI, time::Duration};
 
 #[derive(Debug, Clone)]
+pub struct Warmup(pub SharedSamples<f32>);
+
+impl Warmup {
+    pub fn new(warmup_len: usize, sample_rate: u32, duration: f32) -> Self {
+        let len = warmup_len as u32 * (duration * sample_rate as f32) as u32;
+        let warmup = (0..len)
+            .map(|item| {
+                if item < len / 2 {
+                    2000.0 + item as f32 * 6000.0 / (len / 2) as f32
+                } else {
+                    8000.0 - (item - len / 2) as f32 * 6000.0 / (len / 2) as f32
+                }
+            })
+            .map(|item| (item * 2.0 * PI / sample_rate as f32).sin())
+            .collect::<SharedSamples<f32>>();
+        Self(warmup)
+    }
+}
+
+impl From<Warmup> for Preamble {
+    fn from(value: Warmup) -> Self {
+        Self(value.0)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Preamble(pub SharedSamples<f32>);
 
 impl Preamble {
