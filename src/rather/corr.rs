@@ -1,4 +1,5 @@
 use realfft::{num_complex::Complex, RealFftPlanner};
+use std::f32::consts::PI;
 
 pub fn rfft(source: &[f32], len: usize) -> Box<[Complex<f32>]> {
     let mut real_planner = RealFftPlanner::<f32>::new();
@@ -57,14 +58,14 @@ pub fn correlate(volume: &[f32], kernel: &[f32]) -> Box<[f32]> {
         .collect()
 }
 
-pub trait ArgMax<T>
+pub trait ArgMax
 where
-    T: AsRef<[f32]>,
+    Self: AsRef<[f32]>,
 {
     fn argmax(&self) -> (usize, f32);
 }
 
-impl ArgMax<Box<[f32]>> for Box<[f32]> {
+impl ArgMax for Box<[f32]> {
     fn argmax(&self) -> (usize, f32) {
         let (mut index, mut max) = (0, 0.);
         for (i, item) in self.iter().enumerate() {
@@ -76,14 +77,26 @@ impl ArgMax<Box<[f32]>> for Box<[f32]> {
     }
 }
 
-pub trait Normalize<T>
-where
-    T: AsRef<[f32]>,
-{
-    fn normalize(&self) -> T;
+impl ArgMax for Vec<f32> {
+    fn argmax(&self) -> (usize, f32) {
+        let (mut index, mut max) = (0, 0.);
+        for (i, item) in self.iter().enumerate() {
+            if *item > max {
+                (index, max) = (i, *item);
+            }
+        }
+        (index, max)
+    }
 }
 
-impl Normalize<Box<[f32]>> for Box<[f32]> {
+pub trait Normalize
+where
+    Self: AsRef<[f32]>,
+{
+    fn normalize(&self) -> Self;
+}
+
+impl Normalize for Box<[f32]> {
     fn normalize(&self) -> Box<[f32]> {
         let norm = self.iter().fold(0., |acc, item| acc + item * item).sqrt();
         self.iter()
@@ -93,7 +106,7 @@ impl Normalize<Box<[f32]>> for Box<[f32]> {
     }
 }
 
-impl Normalize<Vec<f32>> for Vec<f32> {
+impl Normalize for Vec<f32> {
     fn normalize(&self) -> Vec<f32> {
         let norm = self.iter().fold(0., |acc, item| acc + item * item).sqrt();
         self.iter().map(|item| item / norm).collect::<Vec<_>>()
@@ -108,6 +121,97 @@ pub fn synchronize(volume: &[f32], kernel: &[f32]) -> (isize, f32) {
 
 pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).fold(0., |acc, (a, b)| acc + a * b)
+}
+
+pub trait LowPass
+where
+    Self: AsMut<[f32]>,
+{
+    fn low_pass(&mut self, sample_rate: f32, cutoff: f32);
+}
+
+impl LowPass for Box<[f32]> {
+    fn low_pass(&mut self, sample_rate: f32, cutoff: f32) {
+        let rc = 1. / (cutoff * 2. * PI);
+        let dt = 1. / sample_rate;
+        let alpha = dt / (rc + dt);
+
+        self[0] *= alpha;
+        for i in 1..self.len() {
+            self[i] = self[i - 1] + alpha * (self[i] - self[i - 1]);
+        }
+    }
+}
+
+impl LowPass for Vec<f32> {
+    fn low_pass(&mut self, sample_rate: f32, cutoff: f32) {
+        let rc = 1. / (cutoff * 2. * PI);
+        let dt = 1. / sample_rate;
+        let alpha = dt / (rc + dt);
+
+        self[0] *= alpha;
+        for i in 1..self.len() {
+            self[i] = self[i - 1] + alpha * (self[i] - self[i - 1]);
+        }
+    }
+}
+
+pub trait HighPass
+where
+    Self: AsMut<[f32]>,
+{
+    fn high_pass(&mut self, sample_rate: f32, cutoff: f32);
+}
+
+impl HighPass for Box<[f32]> {
+    fn high_pass(&mut self, sample_rate: f32, cutoff: f32) {
+        let rc = 1. / (cutoff * 2. * PI);
+        let dt = 1. / sample_rate;
+        let alpha = rc / (rc + dt);
+
+        let mut last = self[0];
+        for i in 1..self.len() {
+            let cur = self[i];
+            self[i] = alpha * (self[i - 1] + self[i] - last);
+            last = cur;
+        }
+    }
+}
+
+impl HighPass for Vec<f32> {
+    fn high_pass(&mut self, sample_rate: f32, cutoff: f32) {
+        let rc = 1. / (cutoff * 2. * PI);
+        let dt = 1. / sample_rate;
+        let alpha = rc / (rc + dt);
+
+        let mut last = self[0];
+        for i in 1..self.len() {
+            let cur = self[i];
+            self[i] = alpha * (self[i - 1] + self[i] - last);
+            last = cur;
+        }
+    }
+}
+
+pub trait BandPass
+where
+    Self: AsMut<[f32]>,
+{
+    fn band_pass(&mut self, sample_rate: f32, band: (f32, f32));
+}
+
+impl BandPass for Box<[f32]> {
+    fn band_pass(&mut self, sample_rate: f32, band: (f32, f32)) {
+        self.low_pass(sample_rate, band.1);
+        self.high_pass(sample_rate, band.0);
+    }
+}
+
+impl BandPass for Vec<f32> {
+    fn band_pass(&mut self, sample_rate: f32, band: (f32, f32)) {
+        self.low_pass(sample_rate, band.1);
+        self.high_pass(sample_rate, band.0);
+    }
 }
 
 #[cfg(test)]
