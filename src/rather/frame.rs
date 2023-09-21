@@ -289,11 +289,27 @@ impl From<Frame> for AudioTrack<f32> {
 
 impl From<Frame> for AudioSamples<f32> {
     fn from(value: Frame) -> Self {
-        let mut source = value.header.preamble.0.to_vec();
-        for symbol in value.header.length.iter() {
+        let mut source = vec![];
+        source.extend(Into::<AudioSamples<f32>>::into(value.header).iter());
+        source.extend(Into::<AudioSamples<f32>>::into(value.body).iter());
+        source.into()
+    }
+}
+
+impl From<Header> for AudioSamples<f32> {
+    fn from(value: Header) -> Self {
+        let mut source = value.preamble.0.to_vec();
+        for symbol in value.length.iter() {
             source.extend(symbol.0.to_vec());
         }
-        for symbol in value.body.payload.iter() {
+        source.into()
+    }
+}
+
+impl From<Body> for AudioSamples<f32> {
+    fn from(value: Body) -> Self {
+        let mut source = vec![];
+        for symbol in value.payload.iter() {
             source.extend(symbol.0.to_vec());
         }
         source.into()
