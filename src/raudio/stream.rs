@@ -1,4 +1,7 @@
-use super::{asio::AsioOutputStream, AsioDevice, AudioSamples};
+use super::{
+    asio::{AsioInputStream, AsioOutputStream},
+    AsioDevice, AudioSamples,
+};
 use anyhow::Result;
 use cpal::{
     traits::{DeviceTrait, StreamTrait},
@@ -213,7 +216,7 @@ where
 }
 
 pub struct AudioInputStream<S: Sample> {
-    stream: cpal::Stream,
+    stream: AsioInputStream,
     config: SupportedStreamConfig,
     task: AudioInputTask,
     reciever: Receiver<AudioSamples<S>>,
@@ -252,7 +255,7 @@ where
             _ => return Err(SupportedStreamConfigsError::InvalidArgument.into()),
         }?;
 
-        stream.pause().unwrap();
+        stream.0.pause().unwrap();
 
         Ok(AudioInputStream {
             stream,
@@ -277,13 +280,13 @@ fn build_input_stream<T, S>(
     device: &AsioDevice,
     config: SupportedStreamConfig,
     sender: Sender<AudioSamples<S>>,
-    task: Arc<Mutex<AudioInputTaskState>>,
-) -> Result<cpal::Stream>
+    task: AudioInputTask,
+) -> Result<AsioInputStream>
 where
     T: SizedSample,
     S: Send + Sample + FromSample<T> + 'static,
 {
-    Ok(device.0.build_input_stream(
+    Ok(AsioInputStream::new(device.0.build_input_stream(
         &config.into(),
         {
             move |data: &[T], _: _| {
@@ -300,7 +303,7 @@ where
         },
         |error| eprintln!("an error occurred on input stream: {}", error),
         None,
-    )?)
+    )?))
 }
 
 impl<S> AudioInputStream<S>
@@ -373,7 +376,7 @@ where
         match guard.take() {
             AudioInputTaskState::Pending => {
                 *guard = AudioInputTaskState::Running(cx.waker().clone());
-                self.stream.play().unwrap();
+                self.stream.0.play().unwrap();
                 Poll::Pending
             }
             AudioInputTaskState::Running(_) => {
@@ -415,7 +418,7 @@ where
         let mut guard = self.task.lock().unwrap();
         match guard.take() {
             AudioInputTaskState::Running(waker) => {
-                self.stream.pause().unwrap();
+                self.stream.0.pause().unwrap();
                 *guard = AudioInputTaskState::Suspended;
                 waker.wake();
             }
