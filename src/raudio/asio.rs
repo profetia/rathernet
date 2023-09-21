@@ -1,5 +1,5 @@
 use anyhow::Result;
-use cpal::{traits::HostTrait, Device, Host, SupportedStreamConfig};
+use cpal::{traits::HostTrait, Device, Host, Stream, SupportedStreamConfig};
 use rodio::{DeviceTrait, OutputStream, OutputStreamHandle, StreamError};
 
 pub struct AsioHost(pub Host);
@@ -65,3 +65,13 @@ impl AsioOutputStream {
         }
     }
 }
+
+pub struct AsioInputStream(pub Stream);
+
+impl AsioInputStream {
+    pub fn new(stream: Stream) -> Self {
+        Self(stream)
+    }
+}
+
+unsafe impl Send for AsioInputStream {}
