@@ -1,6 +1,6 @@
-mod corr;
 mod frame;
+mod signal;
 mod stream;
 
-pub use frame::{Body, Frame, Header, Preamble, Symbol};
+pub use frame::{Body, Frame, Header, Preamble, Symbol, Warmup};
 pub use stream::{AtherOutputStream, AtherStreamConfig};
