@@ -381,9 +381,16 @@ where
             }
             AudioInputTaskState::Running(_) => {
                 *guard = AudioInputTaskState::Running(cx.waker().clone());
-                match self.reciever.try_recv() {
-                    Ok(data) => Poll::Ready(Some(data)),
-                    Err(_) => Poll::Pending,
+                let mut samples: Vec<S> = vec![];
+                let iter = self.reciever.try_iter();
+                for data in iter {
+                    samples.extend(data.iter());
+                }
+
+                if samples.is_empty() {
+                    Poll::Pending
+                } else {
+                    Poll::Ready(Some(samples.into_boxed_slice()))
                 }
             }
             AudioInputTaskState::Suspended => Poll::Ready(None),
