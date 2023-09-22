@@ -230,5 +230,19 @@ mod tests {
         let (index, value) = synchronize(&a, &b);
         assert_eq!(index, -5);
         assert!((-1. ..=1.).contains(&value));
+
+        let a: Vec<f32> = vec![2., 3., 4., 3., 2., 1., 0., 3., 6.];
+        let b: Vec<f32> = vec![1., 2., 3., 4., 3., 2., 1.];
+        let (index, value) = synchronize(&b, &a);
+        assert_eq!(index, -1);
+        assert!((-1. ..=1.).contains(&value));
+        assert_eq!(&a[(b.len() as isize + index) as usize..], [0., 3., 6.]);
+
+        let a: Vec<f32> = vec![0., 0., 0., 3., 4., 3., 2., 1., 0., 3., 6.];
+        let b: Vec<f32> = vec![1., 2., 3., 4., 3., 2., 1.];
+        let (index, value) = synchronize(&b, &a);
+        assert_eq!(index, 1);
+        assert!((-1. ..=1.).contains(&value));
+        assert_eq!(&a[(b.len() as isize + index) as usize..], [0., 3., 6.]);
     }
 }
