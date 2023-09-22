@@ -32,9 +32,9 @@ use tokio::sync::{
 use tokio_stream::{Stream, StreamExt};
 
 const WARMUP_LEN: usize = 8;
-const PREAMBLE_LEN: usize = 8;
+const PREAMBLE_LEN: usize = 48;
 const LENGTH_LEN: usize = 7;
-const PAYLOAD_LEN: usize = 127;
+const PAYLOAD_LEN: usize = (1 << LENGTH_LEN) - 1;
 const CORR_THRESHOLD: f32 = 0.15;
 
 #[derive(Debug, Clone)]
@@ -118,7 +118,7 @@ fn create_warmup(config: &AtherStreamConfig) -> Frame {
         config.stream_config.clone(),
         Header::new(
             config.warmup.clone().into(),
-            0u8.encode(config.symbols.clone()),
+            0usize.encode(config.symbols.clone()),
         ),
         Body::new(vec![]),
     )
@@ -128,7 +128,7 @@ fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<Frame> {
     let mut frames = vec![];
     for chunk in bits.chunks(PAYLOAD_LEN) {
         let payload = chunk.encode(config.symbols.clone());
-        let length = (chunk.len() as u8).encode(config.symbols.clone())[..LENGTH_LEN].to_owned();
+        let length = chunk.len().encode(config.symbols.clone())[..LENGTH_LEN].to_owned();
 
         frames.push(Frame::new(
             config.stream_config.clone(),
@@ -138,7 +138,7 @@ fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<Frame> {
     }
     if bits.len() % PAYLOAD_LEN == 0 {
         let payload = vec![];
-        let length = 0u8.encode(config.symbols.clone())[..LENGTH_LEN].to_owned();
+        let length = 0usize.encode(config.symbols.clone())[..LENGTH_LEN].to_owned();
 
         frames.push(Frame::new(
             config.stream_config.clone(),
@@ -154,7 +154,7 @@ trait AtherEncoding {
     fn encode(&self, symbols: (Symbol, Symbol)) -> Vec<Symbol>;
 }
 
-impl AtherEncoding for u8 {
+impl AtherEncoding for usize {
     fn encode(&self, symbols: (Symbol, Symbol)) -> Vec<Symbol> {
         self.view_bits::<Lsb0>()
             .into_iter()
@@ -185,45 +185,76 @@ impl AtherEncoding for BitSlice {
 
 pub struct AtherInputStream {
     task: AtherInputTask,
-    sender: UnboundedSender<()>,
-    stream: Arc<sync::Mutex<AudioInputStream<f32>>>,
+    sender: UnboundedSender<AtherInputTaskCmd>,
 }
 
 impl AtherInputStream {
-    pub fn new(config: AtherStreamConfig, stream: AudioInputStream<f32>) -> Self {
+    pub fn new(config: AtherStreamConfig, mut stream: AudioInputStream<f32>) -> Self {
         let (sender, mut reciever) = mpsc::unbounded_channel();
         let task = Arc::new(Mutex::new(AtherInputTaskState::Pending));
-        let stream = Arc::new(sync::Mutex::new(stream));
         tokio::spawn({
             let task = task.clone();
-            let stream = stream.clone();
             async move {
                 let mut buf = vec![];
-                while (reciever.recv().await).is_some() {
-                    match decode_packet(&config, &stream, &mut buf).await {
-                        Some(bits) => {
+                while let Some(cmd) = reciever.recv().await {
+                    match cmd {
+                        AtherInputTaskCmd::Running => {
+                            match decode_packet(&config, &mut stream, &mut buf).await {
+                                Some(bits) => {
+                                    let mut guard = task.lock().unwrap();
+                                    match guard.take() {
+                                        AtherInputTaskState::Running(waker) => {
+                                            *guard = AtherInputTaskState::Completed(bits);
+                                            waker.wake();
+                                        }
+                                        content => *guard = content,
+                                    }
+                                }
+                                None => {
+                                    buf.clear();
+                                }
+                            }
+                        }
+                        AtherInputTaskCmd::Suspended => {
+                            stream.suspend();
                             let mut guard = task.lock().unwrap();
                             match guard.take() {
                                 AtherInputTaskState::Running(waker) => {
-                                    *guard = AtherInputTaskState::Completed(bits);
+                                    *guard = AtherInputTaskState::Suspended(None);
                                     waker.wake();
+                                }
+                                AtherInputTaskState::Completed(bits) => {
+                                    *guard = AtherInputTaskState::Suspended(Some(bits));
                                 }
                                 content => *guard = content,
                             }
                         }
-                        None => {
-                            buf.clear();
+                        AtherInputTaskCmd::Resume => {
+                            stream.resume();
+                            let mut guard = task.lock().unwrap();
+                            match guard.take() {
+                                AtherInputTaskState::Suspended(bits) => {
+                                    if let Some(bits) = bits {
+                                        *guard = AtherInputTaskState::Completed(bits);
+                                    } else {
+                                        *guard = AtherInputTaskState::Pending;
+                                    }
+                                }
+                                content => *guard = content,
+                            }
                         }
                     }
                 }
             }
         });
-        Self {
-            sender,
-            task,
-            stream,
-        }
+        Self { sender, task }
     }
+}
+
+enum AtherInputTaskCmd {
+    Running,
+    Suspended,
+    Resume,
 }
 
 type AtherInputTask = Arc<Mutex<AtherInputTaskState>>;
@@ -249,7 +280,7 @@ impl Stream for AtherInputStream {
         match guard.take() {
             AtherInputTaskState::Pending => {
                 *guard = AtherInputTaskState::Running(cx.waker().clone());
-                self.sender.send(()).unwrap();
+                self.sender.send(AtherInputTaskCmd::Running).unwrap();
                 Poll::Pending
             }
             AtherInputTaskState::Running(_) => {
@@ -272,17 +303,10 @@ impl Stream for AtherInputStream {
     }
 }
 
-async fn receive_sample(
-    stream: &Arc<sync::Mutex<AudioInputStream<f32>>>,
-) -> Option<AudioSamples<f32>> {
-    let mut guard = stream.lock().await;
-    guard.next().await
-}
-
 async fn decode_packet(
     // async fn decode_frame(
     config: &AtherStreamConfig,
-    stream: &Arc<sync::Mutex<AudioInputStream<f32>>>,
+    stream: &mut AudioInputStream<f32>,
     buf: &mut Vec<f32>,
 ) -> Option<BitVec> {
     let sample_rate = config.stream_config.sample_rate().0 as f32;
@@ -320,7 +344,7 @@ async fn decode_packet(
         }
 
         println!("Wait for more data");
-        match receive_sample(stream).await {
+        match stream.next().await {
             Some(sample) => buf.extend(sample.iter()),
             None => return None,
         }
@@ -329,7 +353,7 @@ async fn decode_packet(
 
     println!("Preamble found");
 
-    let (mut length, mut index) = (0u8, 0usize);
+    let (mut length, mut index) = (0usize, 0usize);
     while index < LENGTH_LEN {
         if buf.len() > symbol_len {
             buf.band_pass(sample_rate, band_pass);
@@ -342,7 +366,7 @@ async fn decode_packet(
             *buf = buf.split_off(symbol_len);
             index += 1;
         } else {
-            match receive_sample(stream).await {
+            match stream.next().await {
                 Some(sample) => buf.extend(sample.iter()),
                 None => return None,
             }
@@ -351,7 +375,7 @@ async fn decode_packet(
 
     println!("Found length {}", length);
 
-    let (mut bits, mut index) = (bitvec![], 0u8);
+    let (mut bits, mut index) = (bitvec![], 0usize);
     while index < length {
         if buf.len() > symbol_len {
             buf.band_pass(sample_rate, band_pass);
@@ -365,7 +389,7 @@ async fn decode_packet(
             *buf = buf.split_off(symbol_len);
             index += 1;
         } else {
-            match receive_sample(stream).await {
+            match stream.next().await {
                 Some(sample) => buf.extend(sample.iter()),
                 None => return None,
             }
@@ -398,36 +422,10 @@ async fn decode_packet(
 
 impl ContinuousStream for AtherInputStream {
     fn resume(&self) {
-        let mut guard = self.task.lock().unwrap();
-        match guard.take() {
-            AtherInputTaskState::Suspended(bits) => {
-                if let Some(bits) = bits {
-                    *guard = AtherInputTaskState::Completed(bits);
-                } else {
-                    *guard = AtherInputTaskState::Pending;
-                }
-                let guard = self.stream.blocking_lock();
-                guard.resume();
-            }
-            content => *guard = content,
-        }
+        self.sender.send(AtherInputTaskCmd::Resume).unwrap();
     }
 
     fn suspend(&self) {
-        let mut guard = self.task.lock().unwrap();
-        match guard.take() {
-            AtherInputTaskState::Pending => {
-                *guard = AtherInputTaskState::Suspended(None);
-            }
-            AtherInputTaskState::Running(_) => {
-                *guard = AtherInputTaskState::Suspended(None);
-                let guard = self.stream.blocking_lock();
-                guard.suspend();
-            }
-            AtherInputTaskState::Completed(bits) => {
-                *guard = AtherInputTaskState::Suspended(Some(bits));
-            }
-            content => *guard = content,
-        }
+        self.sender.send(AtherInputTaskCmd::Suspended).unwrap();
     }
 }
