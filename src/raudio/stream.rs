@@ -13,7 +13,7 @@ use std::{
     mem,
     sync::{
         mpsc::{self, Receiver, Sender},
-        Arc, Mutex,
+        Arc, Mutex, RwLock,
     },
     task::{Poll, Waker},
     thread,
@@ -237,7 +237,7 @@ where
         config: SupportedStreamConfig,
     ) -> Result<Self> {
         let (sender, reciever) = mpsc::channel::<AudioSamples<S>>();
-        let task = Arc::new(Mutex::new(AudioInputTaskState::Pending));
+        let task = Arc::new(RwLock::new(AudioInputTaskState::Pending));
 
         let stream = match config.sample_format() {
             SampleFormat::I8 => {
@@ -290,12 +290,13 @@ where
         &config.into(),
         {
             move |data: &[T], _: _| {
-                let guard = task.lock().unwrap();
+                let data = data
+                    .iter()
+                    .map(|sample| S::from_sample(*sample))
+                    .collect::<AudioSamples<S>>();
+
+                let guard = task.read().unwrap();
                 if let AudioInputTaskState::Running(ref waker) = *guard {
-                    let data = data
-                        .iter()
-                        .map(|sample| S::from_sample(*sample))
-                        .collect::<AudioSamples<S>>();
                     sender.send(data).unwrap();
                     waker.wake_by_ref();
                 }
@@ -342,7 +343,7 @@ where
     }
 }
 
-type AudioInputTask = Arc<Mutex<AudioInputTaskState>>;
+type AudioInputTask = Arc<RwLock<AudioInputTaskState>>;
 
 enum AudioInputTaskState {
     Pending,
@@ -372,7 +373,7 @@ where
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        let mut guard = self.task.lock().unwrap();
+        let mut guard = self.task.write().unwrap();
         match guard.take() {
             AudioInputTaskState::Pending => {
                 *guard = AudioInputTaskState::Running(cx.waker().clone());
@@ -422,7 +423,7 @@ where
         + 'static,
 {
     fn suspend(&self) {
-        let mut guard = self.task.lock().unwrap();
+        let mut guard = self.task.write().unwrap();
         match guard.take() {
             AudioInputTaskState::Running(waker) => {
                 self.stream.0.pause().unwrap();
@@ -435,7 +436,7 @@ where
     }
 
     fn resume(&self) {
-        let mut guard = self.task.lock().unwrap();
+        let mut guard = self.task.write().unwrap();
         match guard.take() {
             AudioInputTaskState::Suspended => *guard = AudioInputTaskState::Pending,
             content => *guard = content,
