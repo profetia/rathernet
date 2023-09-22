@@ -9,9 +9,8 @@
 // TODO: implement the parity of length field and checksum field
 
 use super::{
-    frame::Header,
     signal::{self, BandPass},
-    Body, Frame, Preamble, Symbol, Warmup,
+    Preamble, Symbol, Warmup,
 };
 use crate::raudio::{
     AudioInputStream, AudioOutputStream, AudioSamples, AudioTrack, ContinuousStream,
@@ -25,10 +24,7 @@ use std::{
     task::{self, Poll, Waker},
     time::Duration,
 };
-use tokio::sync::{
-    self,
-    mpsc::{self, UnboundedSender},
-};
+use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_stream::{Stream, StreamExt};
 
 const WARMUP_LEN: usize = 8;
@@ -76,34 +72,16 @@ impl AtherOutputStream {
 
 impl AtherOutputStream {
     pub async fn write(&self, bits: &BitSlice) {
-        let mut frames = vec![create_warmup(&self.config)];
+        let mut frames = vec![self.config.warmup.0.clone()];
         frames.extend(encode_packet(&self.config, bits));
-
-        let track = AudioTrack::new(
-            self.config.stream_config.clone(),
-            frames
-                .into_iter()
-                .map(|frame| frame.into())
-                .collect::<Vec<AudioSamples<f32>>>()
-                .concat()
-                .into(),
-        );
+        let track = AudioTrack::new(self.config.stream_config.clone(), frames.concat().into());
         self.stream.write(track).await;
     }
 
     pub async fn write_timeout(&self, bits: &BitSlice, timeout: Duration) {
-        let mut frames = vec![create_warmup(&self.config)];
+        let mut frames = vec![self.config.warmup.0.clone()];
         frames.extend(encode_packet(&self.config, bits));
-
-        let track = AudioTrack::new(
-            self.config.stream_config.clone(),
-            frames
-                .into_iter()
-                .map(|frame| frame.into())
-                .collect::<Vec<AudioSamples<f32>>>()
-                .concat()
-                .into(),
-        );
+        let track = AudioTrack::new(self.config.stream_config.clone(), frames.concat().into());
         tokio::select! {
             _ = async {
                 self.stream.write(track).await;
@@ -113,38 +91,35 @@ impl AtherOutputStream {
     }
 }
 
-fn create_warmup(config: &AtherStreamConfig) -> Frame {
-    Frame::new(
-        config.stream_config.clone(),
-        Header::new(
-            config.warmup.clone().into(),
-            0usize.encode(config.symbols.clone()),
-        ),
-        Body::new(vec![]),
-    )
-}
-
-fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<Frame> {
+fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<AudioSamples<f32>> {
     let mut frames = vec![];
     for chunk in bits.chunks(PAYLOAD_LEN) {
         let payload = chunk.encode(config.symbols.clone());
         let length = chunk.len().encode(config.symbols.clone())[..LENGTH_LEN].to_owned();
 
-        frames.push(Frame::new(
-            config.stream_config.clone(),
-            Header::new(config.preamble.clone(), length),
-            Body::new(payload),
-        ));
+        frames.push(
+            [
+                config.preamble.0.clone(),
+                length.into_iter().collect(),
+                payload.into_iter().collect(),
+            ]
+            .concat()
+            .into(),
+        );
     }
     if bits.len() % PAYLOAD_LEN == 0 {
-        let payload = vec![];
+        let payload: Vec<Symbol> = vec![];
         let length = 0usize.encode(config.symbols.clone())[..LENGTH_LEN].to_owned();
 
-        frames.push(Frame::new(
-            config.stream_config.clone(),
-            Header::new(config.preamble.clone(), length),
-            Body::new(payload),
-        ));
+        frames.push(
+            [
+                config.preamble.0.clone(),
+                length.into_iter().collect(),
+                payload.into_iter().collect(),
+            ]
+            .concat()
+            .into(),
+        );
     }
 
     frames
