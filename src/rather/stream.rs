@@ -29,8 +29,8 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_stream::{Stream, StreamExt};
 
 const WARMUP_LEN: usize = 8;
-const PREAMBLE_LEN: usize = 16; // 8
-const LENGTH_LEN: usize = 6; // 5
+const PREAMBLE_LEN: usize = 32; // 8 | 16
+const LENGTH_LEN: usize = 7; // 5 | 6
 const PAYLOAD_LEN: usize = (1 << LENGTH_LEN) - 1;
 const CORR_THRESHOLD: f32 = 0.15;
 
@@ -325,6 +325,7 @@ async fn decode_packet(
                     value,
                     buf.len()
                 );
+                *buf = buf.split_off(buf.len() - preamble_len);
             }
         }
 
