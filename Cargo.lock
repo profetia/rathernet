@@ -111,7 +111,7 @@ checksum = "96d30a06541fbafbc7f82ed10c06164cfbd2c401138f6addd8404629c4b16711"
 [[package]]
 name = "asio-sys"
 version = "0.2.1"
-source = "git+https://github.com/RustAudio/cpal.git?branch=master#f51589c55261550407dc12dedd7a3e5512be77e1"
+source = "git+https://github.com/RustAudio/cpal.git?rev=f51589c#f51589c55261550407dc12dedd7a3e5512be77e1"
 dependencies = [
  "bindgen",
  "cc",
@@ -351,7 +351,7 @@ dependencies = [
 [[package]]
 name = "cpal"
 version = "0.15.2"
-source = "git+https://github.com/RustAudio/cpal.git?branch=master#f51589c55261550407dc12dedd7a3e5512be77e1"
+source = "git+https://github.com/RustAudio/cpal.git?rev=f51589c#f51589c55261550407dc12dedd7a3e5512be77e1"
 dependencies = [
  "alsa",
  "asio-sys",
