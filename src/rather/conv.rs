@@ -89,17 +89,13 @@ impl ConvCode {
 type Transition<'a> = (usize, u32, u32, &'a Path, bool);
 
 impl ConvCode {
-    pub fn encode(&self, data: &[u8]) -> BitVec {
-        let mut inputs = bitvec![];
+    pub fn encode(&self, bits: &BitSlice) -> BitVec {
+        let mut bits = bits.to_owned();
+        bits.resize(bits.len() + self.order, false);
         let mut outputs = bitvec![];
 
-        for &byte in data.iter() {
-            inputs.extend(byte.view_bits::<Msb0>());
-        }
-        inputs.resize(inputs.len() + self.order, false);
-
         let mut now = 0;
-        for bit in inputs.iter() {
+        for bit in bits.iter() {
             outputs.extend(&self.outputs[now][*bit as usize]);
             now = self.transitions[now][*bit as usize];
         }
@@ -107,8 +103,8 @@ impl ConvCode {
         outputs
     }
 
-    pub fn decode(&self, data: &BitSlice) -> (Vec<u8>, u32) {
-        let words = data.chunks(self.factor);
+    pub fn decode(&self, bits: &BitSlice) -> (BitVec, u32) {
+        let words = bits.chunks(self.factor);
         let mut paths = vec![Path::new(0)];
 
         for word in words {
@@ -147,14 +143,29 @@ impl ConvCode {
             paths = new_paths
         }
 
-        let result = paths
+        let Path { bits, score, .. } = paths
             .into_iter()
             .find_map(|path| if path.last == 0 { Some(path) } else { None })
             .unwrap();
-        let bits = result.bits[..result.bits.len() - self.order].to_owned();
 
-        let bytes = bits
-            .chunks(8)
+        (bits[..bits.len() - self.order].to_owned(), score)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn encode_bytes(bytes: &[u8]) -> BitVec {
+        let mut result = bitvec![];
+        for &byte in bytes.iter() {
+            result.extend(byte.view_bits::<Msb0>());
+        }
+        result
+    }
+
+    fn decode_bytes(bits: &BitSlice) -> Vec<u8> {
+        bits.chunks(8)
             .map(|bits| {
                 bits.iter()
                     .rev()
@@ -164,21 +175,14 @@ impl ConvCode {
                         |acc, (index, bit)| if *bit { acc | (1 << index) as u8 } else { acc },
                     )
             })
-            .collect();
-
-        (bytes, result.score)
+            .collect()
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 
     #[test]
     fn test_encode() {
         let conv = ConvCode::new(vec![5, 7]);
         let input_bytes = b"\xFE\xF0\x0A\x01";
-        let encoded = conv.encode(input_bytes);
+        let encoded = conv.encode(&encode_bytes(input_bytes));
         assert_eq!(
             encoded,
             vec![
@@ -193,7 +197,7 @@ mod tests {
 
         let conv = ConvCode::new(vec![3, 7, 13]);
         let input_bytes = b"\x72\x01";
-        let encoded = conv.encode(input_bytes);
+        let encoded = conv.encode(&encode_bytes(input_bytes));
         assert_eq!(
             encoded,
             vec![
@@ -211,22 +215,22 @@ mod tests {
     fn test_decode() {
         let conv = ConvCode::new(vec![5, 7]);
         let input_bytes = b"\xFE\xF0\x0A\x01";
-        let encoded = conv.encode(input_bytes);
+        let encoded = conv.encode(&encode_bytes(input_bytes));
         let (decoded, _) = conv.decode(&encoded);
-        assert_eq!(&decoded[..], input_bytes);
+        assert_eq!(decode_bytes(&decoded[..]), input_bytes);
 
         let conv = ConvCode::new(vec![3, 7, 13]);
         let input_bytes = b"\x72\x01";
-        let encoded = conv.encode(input_bytes);
+        let encoded = conv.encode(&encode_bytes(input_bytes));
         let (decoded, _) = conv.decode(&encoded);
-        assert_eq!(&decoded[..], input_bytes);
+        assert_eq!(decode_bytes(&decoded[..]), input_bytes);
     }
 
     #[test]
     fn test_correction() {
         let conv = ConvCode::new(vec![5, 7]);
         let input_bytes = b"\xFE\xF0\x0A\x01";
-        let mut encoded = conv.encode(input_bytes);
+        let mut encoded = conv.encode(&encode_bytes(input_bytes));
         let (_, corrected_errors) = conv.decode(&encoded);
         assert_eq!(corrected_errors, 0);
 
@@ -239,7 +243,7 @@ mod tests {
 
         let conv = ConvCode::new(vec![3, 7, 13]);
         let input_bytes = b"\x72\x01";
-        let mut encoded = conv.encode(input_bytes);
+        let mut encoded = conv.encode(&encode_bytes(input_bytes));
         let (_, corrected_errors) = conv.decode(&encoded);
         assert_eq!(corrected_errors, 0);
 
