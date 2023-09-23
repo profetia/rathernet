@@ -28,6 +28,16 @@ impl TrellisPath {
     }
 }
 
+impl TrellisPath {
+    fn add_path(&mut self, state: usize, branch_metric: usize, bits_input: u8) {
+        self.last_state = state;
+        self.path.push(state);
+        self.path_metric += branch_metric;
+        self.bits_input.push(bits_input);
+        self.len += 1;
+    }
+}
+
 pub struct ConvolutionalCode {
     n: usize,
     k: usize,
@@ -37,7 +47,7 @@ pub struct ConvolutionalCode {
     state_space: Vec<usize>,
     generators: Vec<usize>,
     next_states: Vec<Vec<usize>>,
-    out_bits: Vec<Vec<Vec<usize>>>,
+    out_bits: Vec<Vec<Vec<u8>>>,
 }
 
 impl ConvolutionalCode {
@@ -70,7 +80,7 @@ impl ConvolutionalCode {
                         >> (8 * mem::size_of::<usize>() - (constraint_length + 1));
                     let lsr = (current_input << constraint_length) + current_state;
                     let generator_masked_sum_arg = bit_reversed_fwd & lsr;
-                    tmp.push((generator_masked_sum_arg.count_ones() % 2) as usize);
+                    tmp.push((generator_masked_sum_arg.count_ones() % 2) as u8);
                 }
 
                 out_bits[current_state][current_input] = tmp;
@@ -114,6 +124,80 @@ impl ConvolutionalCode {
 
         coded_bits
     }
+
+    pub fn decode(&self, data: &[u8]) -> (Vec<u8>, usize) {
+        let recieved_codewords = data.chunks(self.n);
+        let mut surviving_paths = vec![TrellisPath::new(0)];
+
+        for codeword in recieved_codewords {
+            let mut possible_transitions = vec![];
+            for path in surviving_paths.iter() {
+                for possible_input in 0..(1usize << self.k) {
+                    let last_state = path.last_state;
+                    let next_state = self.next_states[last_state][possible_input];
+                    let possible_output = &self.out_bits[last_state][possible_input];
+                    let branch_metric = possible_output
+                        .iter()
+                        .zip(codeword.iter())
+                        .map(|(x, y)| (x ^ y) as usize)
+                        .sum::<usize>();
+
+                    possible_transitions.push((
+                        next_state,
+                        branch_metric + path.path_metric,
+                        branch_metric,
+                        path,
+                        possible_input as u8,
+                    ))
+                }
+            }
+
+            let mut new_paths = vec![];
+            for &state in self.state_space.iter() {
+                let entering_paths = possible_transitions
+                    .iter()
+                    .filter(|x| x.0 == state)
+                    .collect::<Vec<_>>();
+                if !entering_paths.is_empty() {
+                    let min_path = entering_paths[0];
+                    let selected =
+                        entering_paths
+                            .iter()
+                            .fold(min_path, |acc, x| if acc.1 < x.1 { acc } else { x });
+                    let selected_path = selected.3;
+                    let mut new_path = selected_path.clone();
+                    new_path.add_path(state, selected.2, selected.4);
+                    new_paths.push(new_path);
+                }
+            }
+            surviving_paths = new_paths
+        }
+
+        let chosen_path = surviving_paths
+            .into_iter()
+            .find_map(|path| {
+                if path.last_state == 0 {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        let decoded_bits = chosen_path.bits_input
+            [..chosen_path.bits_input.len() - self.constraint_length]
+            .to_vec();
+
+        let mut decoded_bytes = vec![];
+        for bits in decoded_bits.chunks(8) {
+            let mut byte = 0;
+            for (index, &bit) in bits.iter().rev().enumerate() {
+                byte |= bit << index;
+            }
+            decoded_bytes.push(byte);
+        }
+
+        (decoded_bytes, chosen_path.path_metric)
+    }
 }
 
 #[cfg(test)]
@@ -123,7 +207,6 @@ mod tests {
     #[test]
     fn test_encode() {
         let conv = ConvolutionalCode::new(vec![5, 7]);
-
         let input_bytes = b"\xFE\xF0\x0A\x01";
         let encoded = conv.encode(input_bytes);
         assert_eq!(
@@ -146,5 +229,47 @@ mod tests {
                 1,
             ]
         )
+    }
+
+    #[test]
+    fn test_decode() {
+        let conv = ConvolutionalCode::new(vec![5, 7]);
+        let input_bytes = b"\xFE\xF0\x0A\x01";
+        let encoded = conv.encode(input_bytes);
+        let (decoded, _) = conv.decode(&encoded);
+        assert_eq!(&decoded[..], input_bytes);
+
+        let conv = ConvolutionalCode::new(vec![3, 7, 13]);
+        let input_bytes = b"\x72\x01";
+        let encoded = conv.encode(input_bytes);
+        let (decoded, _) = conv.decode(&encoded);
+        assert_eq!(&decoded[..], input_bytes);
+    }
+
+    #[test]
+    fn test_correction() {
+        let conv = ConvolutionalCode::new(vec![5, 7]);
+        let input_bytes = b"\xFE\xF0\x0A\x01";
+        let mut encoded = conv.encode(input_bytes);
+        let (_, corrected_errors) = conv.decode(&encoded);
+        assert_eq!(corrected_errors, 0);
+
+        for index in [1, 4, 9, 17, 23] as [usize; 5] {
+            encoded[index] ^= 1;
+        }
+        let (_, corrected_errors) = conv.decode(&encoded);
+        assert_eq!(corrected_errors, 5);
+
+        let conv = ConvolutionalCode::new(vec![3, 7, 13]);
+        let input_bytes = b"\x72\x01";
+        let mut encoded = conv.encode(input_bytes);
+        let (_, corrected_errors) = conv.decode(&encoded);
+        assert_eq!(corrected_errors, 0);
+
+        for index in [1, 4, 9, 17, 23] as [usize; 5] {
+            encoded[index] ^= 1;
+        }
+        let (_, corrected_errors) = conv.decode(&encoded);
+        assert_eq!(corrected_errors, 5);
     }
 }
