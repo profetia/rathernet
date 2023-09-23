@@ -18,8 +18,9 @@ use crate::raudio::{
 use bitvec::prelude::*;
 use cpal::SupportedStreamConfig;
 use std::{
-    mem,
+    fs, mem,
     pin::Pin,
+    slice::Chunks,
     sync::{Arc, Mutex},
     task::{self, Poll, Waker},
     time::Duration,
@@ -28,8 +29,8 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_stream::{Stream, StreamExt};
 
 const WARMUP_LEN: usize = 8;
-const PREAMBLE_LEN: usize = 48;
-const LENGTH_LEN: usize = 7;
+const PREAMBLE_LEN: usize = 16; // 8
+const LENGTH_LEN: usize = 6; // 5
 const PAYLOAD_LEN: usize = (1 << LENGTH_LEN) - 1;
 const CORR_THRESHOLD: f32 = 0.15;
 
@@ -74,7 +75,9 @@ impl AtherOutputStream {
     pub async fn write(&self, bits: &BitSlice) {
         let mut frames = vec![self.config.warmup.0.clone()];
         frames.extend(encode_packet(&self.config, bits));
+        // fs::write("ref.json", format!("{:?}", frames.concat())).unwrap();
         let track = AudioTrack::new(self.config.stream_config.clone(), frames.concat().into());
+        // track.write_to_file("ref.wav").unwrap();
         self.stream.write(track).await;
     }
 
@@ -302,20 +305,27 @@ async fn decode_packet(
         );
         if buf.len() >= preamble_len {
             let (index, value) = signal::synchronize(&config.preamble.0, buf);
-            if index >= 0 {
-                let index = index as usize;
+            println!("Got sync index {}", index);
+            if value > CORR_THRESHOLD {
                 println!("Got index {} with {}", index, value);
-                if value > CORR_THRESHOLD && index + preamble_len < buf.len() {
-                    *buf = buf.split_off(index + preamble_len);
+                if (index + preamble_len as isize) < (buf.len() as isize) {
+                    // println!("Before preamble {:?}", buf[..index as usize].to_owned());
+                    // println!(
+                    //     "Preamble {:?}",
+                    //     buf[index as usize..(index + preamble_len as isize) as usize].to_owned()
+                    // );
+                    *buf = buf.split_off((index + preamble_len as isize) as usize);
                     break;
+                } else {
+                    println!("Failed to find a start, len {}", buf.len());
                 }
+            } else {
                 println!(
-                    "Failed to comform the threshold, got {}, len {}",
+                    "Failed to conform the threshold, got {}, len {}",
                     value,
                     buf.len()
                 );
             }
-            println!("Failed to find a start, len {}", buf.len());
         }
 
         println!("Wait for more data");
@@ -327,15 +337,21 @@ async fn decode_packet(
     }
 
     println!("Preamble found");
+    // println!("Remaining data {:?}", buf);
 
     let (mut length, mut index) = (0usize, 0usize);
     while index < LENGTH_LEN {
-        if buf.len() > symbol_len {
-            buf.band_pass(sample_rate, band_pass);
-            let value = signal::dot_product(&config.symbols.0 .0, buf[..symbol_len].as_ref());
-            println!("length value {}", value);
-            if value <= 0. {
+        if buf.len() >= symbol_len {
+            let mut symbol = buf[..symbol_len].to_owned();
+            symbol.band_pass(sample_rate, band_pass);
+            let value = signal::dot_product(&config.symbols.1 .0, &symbol);
+            if value > 0. {
                 length += 1 << index;
+                // println!("[{}] symbol 1 - {:?}", index, value);
+                println!("[{}] symbol 1 - {:?}", index, symbol);
+            } else {
+                // println!("[{}] symbol 0 - {:?}", index, value);
+                println!("[{}] symbol 0 - {:?}", index, symbol);
             }
 
             *buf = buf.split_off(symbol_len);
@@ -352,13 +368,18 @@ async fn decode_packet(
 
     let (mut bits, mut index) = (bitvec![], 0usize);
     while index < length {
-        if buf.len() > symbol_len {
-            buf.band_pass(sample_rate, band_pass);
-            let value = signal::dot_product(&config.symbols.0 .0, buf[..symbol_len].as_ref());
+        if buf.len() >= symbol_len {
+            let mut symbol = buf[..symbol_len].to_owned();
+            symbol.band_pass(sample_rate, band_pass);
+            let value = signal::dot_product(&config.symbols.1 .0, &symbol);
             if value > 0. {
-                bits.push(false);
-            } else {
                 bits.push(true);
+                // println!("[{}] symbol 1 - {:?}", index, value);
+                println!("[{}] symbol 1 - {:?}", index, symbol);
+            } else {
+                bits.push(false);
+                // println!("[{}] symbol 0 - {:?}", index, value);
+                println!("[{}] symbol 0 - {:?}", index, symbol);
             }
 
             *buf = buf.split_off(symbol_len);
