@@ -46,7 +46,7 @@ pub struct ConvCode {
 }
 
 impl ConvCode {
-    pub fn new(generators: Vec<usize>) -> Self {
+    pub fn new(generators: &[usize]) -> Self {
         let factor = generators.len();
         let order = generators
             .iter()
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_encode() {
-        let conv = ConvCode::new(vec![5, 7]);
+        let conv = ConvCode::new(&[5, 7]);
         let input_bytes = b"\xFE\xF0\x0A\x01";
         let encoded = conv.encode(&encode_bytes(input_bytes));
         assert_eq!(
@@ -195,7 +195,7 @@ mod tests {
             .collect::<BitVec>()
         );
 
-        let conv = ConvCode::new(vec![3, 7, 13]);
+        let conv = ConvCode::new(&[3, 7, 13]);
         let input_bytes = b"\x72\x01";
         let encoded = conv.encode(&encode_bytes(input_bytes));
         assert_eq!(
@@ -213,13 +213,13 @@ mod tests {
 
     #[test]
     fn test_decode() {
-        let conv = ConvCode::new(vec![5, 7]);
+        let conv = ConvCode::new(&[5, 7]);
         let input_bytes = b"\xFE\xF0\x0A\x01";
         let encoded = conv.encode(&encode_bytes(input_bytes));
         let (decoded, _) = conv.decode(&encoded);
         assert_eq!(decode_bytes(&decoded[..]), input_bytes);
 
-        let conv = ConvCode::new(vec![3, 7, 13]);
+        let conv = ConvCode::new(&[3, 7, 13]);
         let input_bytes = b"\x72\x01";
         let encoded = conv.encode(&encode_bytes(input_bytes));
         let (decoded, _) = conv.decode(&encoded);
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn test_correction() {
-        let conv = ConvCode::new(vec![5, 7]);
+        let conv = ConvCode::new(&[5, 7]);
         let input_bytes = b"\xFE\xF0\x0A\x01";
         let mut encoded = conv.encode(&encode_bytes(input_bytes));
         let (_, corrected_errors) = conv.decode(&encoded);
@@ -241,7 +241,7 @@ mod tests {
         let (_, corrected_errors) = conv.decode(&encoded);
         assert_eq!(corrected_errors, 5);
 
-        let conv = ConvCode::new(vec![3, 7, 13]);
+        let conv = ConvCode::new(&[3, 7, 13]);
         let input_bytes = b"\x72\x01";
         let mut encoded = conv.encode(&encode_bytes(input_bytes));
         let (_, corrected_errors) = conv.decode(&encoded);
