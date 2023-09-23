@@ -12,11 +12,12 @@ use rathernet::{
 use rodio::Decoder;
 use std::io::Write;
 use std::sync::Arc;
+use std::time::Duration;
 use std::{
     fs::{self, File},
     io::BufReader,
 };
-use tokio::sync;
+use tokio::{sync, time};
 use tokio_stream::StreamExt;
 
 #[tokio::main]
@@ -51,6 +52,7 @@ async fn main() -> Result<()> {
 
     tokio::join!(
         async {
+            time::sleep(Duration::from_secs(5)).await;
             write_ather.write(&bits).await;
             eprintln!("Transmitted: {}", bits.len());
         },
