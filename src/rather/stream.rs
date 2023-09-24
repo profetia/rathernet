@@ -1,13 +1,11 @@
 //! # Rather Streams
 //! Rather streams are used to send and receive data on an ather. The data is encoded in the form
 //! of audio signals in the method of phase shift keying (PSK). The stream is composed of a header,
-//! consisting of a preamble (PREAMBLE_LEN symbols) and a body (BODY_LEN symbols). The body is
-//! composed of a length field (LENGTH_LEN symbols) and a payload (PAYLOAD_LEN symbols). The body
-//! is encoded using a convolutional code with a constraint length of CONV_ORDER and generators of
-//! CONV_GENERATORS. The payload is padded with zeros to make it a multiple of PAYLOAD_LEN symbols,
-//! and its length is encoded in the length field.
-
-// TODO: implement the parity of length field and checksum field
+//! consisting of a preamble (PREAMBLE_LEN symbols) and a length field (LENGTH_FIELD_LEN symbols)
+//! covering LENGTH_LEN bits protected by convolutional code ([171, 133], 1/2), a payload
+//! (PAYLOAD_FIELD_LENGTH symbols), covering PAYLOAD_LEN bits protected by the same convolutional
+//! code. Decoding the payload will result in a bit stream, which is expected to be PAYLOAD_LEN
+//! bits long. An ununified frame indicates the end of a packet.
 
 use super::{
     conv::ConvCode,
@@ -31,15 +29,14 @@ use tokio_stream::{Stream, StreamExt};
 
 const WARMUP_LEN: usize = 8;
 const PREAMBLE_LEN: usize = 32; // 8 | 16 | 32
-
+const CORR_THRESHOLD: f32 = 0.15;
 const CONV_GENERATORS: [usize; 2] = [171, 133];
 const CONV_ORDER: usize = 7;
 
-const CORR_THRESHOLD: f32 = 0.15;
-
-const PAYLOAD_LEN: usize = 63; // 63 | 127
-const LENGTH_LEN: usize = PAYLOAD_LEN.ilog2() as usize + 1;
-const BODY_LEN: usize = (LENGTH_LEN + PAYLOAD_LEN + CONV_ORDER) << 1;
+const PAYLOAD_LEN: usize = 64; // 64 | 128
+const PAYLOAD_FIELD_LEN: usize = (PAYLOAD_LEN + CONV_ORDER) << 1;
+const LENGTH_LEN: usize = PAYLOAD_FIELD_LEN.ilog2() as usize + 1;
+const LENGTH_FIELD_LEN: usize = (LENGTH_LEN + CONV_ORDER) << 1;
 
 #[derive(Debug, Clone)]
 pub struct AtherStreamConfig {
@@ -103,34 +100,34 @@ fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<AudioSample
     let conv = ConvCode::new(&CONV_GENERATORS);
     let mut frames = vec![];
     for chunk in bits.chunks(PAYLOAD_LEN) {
-        let mut body = chunk.len().view_bits()[..LENGTH_LEN].to_owned();
-        body.extend(chunk);
-        if chunk.len() < PAYLOAD_LEN {
-            body.resize(LENGTH_LEN + PAYLOAD_LEN, false);
-        }
+        let payload = conv.encode(chunk).encode(config.symbols.clone());
+        let length = conv
+            .encode(&payload.len().view_bits()[..LENGTH_LEN])
+            .encode(config.symbols.clone())
+            .to_owned();
 
         frames.push(
             [
                 config.preamble.0.clone(),
-                conv.encode(&body)
-                    .encode(config.symbols.clone())
-                    .into_iter()
-                    .collect(),
+                length.into_iter().collect(),
+                payload.into_iter().collect(),
             ]
             .concat()
             .into(),
         );
     }
     if bits.len() % PAYLOAD_LEN == 0 {
-        let body = bitvec![0; LENGTH_LEN + PAYLOAD_LEN];
+        let payload: Vec<Symbol> = vec![];
+        let length = conv
+            .encode(&payload.len().view_bits()[..LENGTH_LEN])
+            .encode(config.symbols.clone())
+            .to_owned();
 
         frames.push(
             [
                 config.preamble.0.clone(),
-                conv.encode(&body)
-                    .encode(config.symbols.clone())
-                    .into_iter()
-                    .collect(),
+                length.into_iter().collect(),
+                payload.into_iter().collect(),
             ]
             .concat()
             .into(),
@@ -314,6 +311,11 @@ async fn decode_frame(
             let (index, value) = signal::synchronize(&config.preamble.0, buf);
             if value > CORR_THRESHOLD {
                 if (index + preamble_len as isize) < (buf.len() as isize) {
+                    // println!("Before preamble {:?}", buf[..index as usize].to_owned());
+                    // println!(
+                    //     "Preamble {:?}",
+                    //     buf[index as usize..(index + preamble_len as isize) as usize].to_owned()
+                    // );
                     *buf = buf.split_off((index + preamble_len as isize) as usize);
                     break;
                 }
@@ -329,19 +331,18 @@ async fn decode_frame(
 
     println!("Preamble found");
 
-    let mut body = bitvec![];
-    body.reserve(BODY_LEN);
-    while body.len() < BODY_LEN {
+    let mut length = bitvec![];
+    while length.len() < LENGTH_FIELD_LEN {
         if buf.len() >= symbol_len {
             let mut symbol = buf[..symbol_len].to_owned();
             symbol.band_pass(sample_rate, band_pass);
             let value = signal::dot_product(&config.symbols.1 .0, &symbol);
             if value > 0. {
-                body.push(true);
-                println!("[{}] symbol 1 - {:?}", body.len(), value);
+                length.push(true);
+                println!("[{}] symbol 1 - {:?}", length.len(), value);
             } else {
-                body.push(false);
-                println!("[{}] symbol 0 - {:?}", body.len(), value);
+                length.push(false);
+                println!("[{}] symbol 0 - {:?}", length.len(), value);
             }
 
             *buf = buf.split_off(symbol_len);
@@ -353,14 +354,38 @@ async fn decode_frame(
         }
     }
 
-    let (body, err) = conv.decode(&body);
-    let length = (&body[..LENGTH_LEN]).decode();
-    println!("Found length {}", length);
+    let (length, err) = conv.decode(&length);
+    let length = length.decode();
 
-    let payload = body[LENGTH_LEN..(LENGTH_LEN + length)].to_owned();
+    println!("Found length {} with {} errors", length, err);
+
+    let mut payload = bitvec![];
+    while payload.len() < length {
+        if buf.len() >= symbol_len {
+            let mut symbol = buf[..symbol_len].to_owned();
+            symbol.band_pass(sample_rate, band_pass);
+            let value = signal::dot_product(&config.symbols.1 .0, &symbol);
+            if value > 0. {
+                payload.push(true);
+                println!("[{}] symbol 1 - {:?}", payload.len(), value);
+            } else {
+                payload.push(false);
+                println!("[{}] symbol 0 - {:?}", payload.len(), value);
+            }
+
+            *buf = buf.split_off(symbol_len);
+        } else {
+            match stream.next().await {
+                Some(sample) => buf.extend(sample.iter()),
+                None => return None,
+            }
+        }
+    }
+
+    let (bits, err) = conv.decode(&payload);
     println!("Payload decoded with {} errors", err);
 
-    Some(payload)
+    Some(bits)
 }
 
 async fn decode_packet(
