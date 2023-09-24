@@ -17,7 +17,6 @@ use crate::raudio::{
     AudioInputStream, AudioOutputStream, AudioSamples, AudioTrack, ContinuousStream,
 };
 use bitvec::prelude::*;
-use code_rs::coding::hamming::standard;
 use cpal::SupportedStreamConfig;
 use std::{
     mem,
@@ -31,9 +30,10 @@ use tokio_stream::{Stream, StreamExt};
 
 const WARMUP_LEN: usize = 8;
 const PREAMBLE_LEN: usize = 32; // 8 | 16
-const LENGTH_LEN: usize = 15; // 5 | 6
 const PAYLOAD_LEN: usize = 64; // 128
 const CORR_THRESHOLD: f32 = 0.15;
+
+const LENGTH_LEN: usize = (PAYLOAD_LEN * 2 + 4).ilog2() as usize + 1;
 
 #[derive(Debug, Clone)]
 pub struct AtherStreamConfig {
@@ -98,8 +98,9 @@ fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<AudioSample
     let mut frames = vec![];
     for chunk in bits.chunks(PAYLOAD_LEN) {
         let payload = conv.encode(chunk).encode(config.symbols.clone());
-        let length = (standard::encode(payload.len() as u16) as usize)
-            .encode(config.symbols.clone())[..LENGTH_LEN]
+        let length = conv
+            .encode(&payload.len().view_bits()[..LENGTH_LEN])
+            .encode(config.symbols.clone())
             .to_owned();
 
         frames.push(
@@ -114,8 +115,9 @@ fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<AudioSample
     }
     if bits.len() % PAYLOAD_LEN == 0 {
         let payload: Vec<Symbol> = vec![];
-        let length = (standard::encode(payload.len() as u16) as usize)
-            .encode(config.symbols.clone())[..LENGTH_LEN]
+        let length = conv
+            .encode(&payload.len().view_bits()[..LENGTH_LEN])
+            .encode(config.symbols.clone())
             .to_owned();
 
         frames.push(
@@ -327,7 +329,7 @@ async fn decode_frame(
     println!("Preamble found");
 
     let mut length = bitvec![];
-    while length.len() < LENGTH_LEN {
+    while length.len() < LENGTH_LEN * 2 + 4 {
         if buf.len() >= symbol_len {
             let mut symbol = buf[..symbol_len].to_owned();
             symbol.band_pass(sample_rate, band_pass);
@@ -349,9 +351,10 @@ async fn decode_frame(
         }
     }
 
-    let length = standard::decode(length.decode() as u16).unwrap().0 as usize;
+    let (length, err) = conv.decode(&length);
+    let length = length.decode();
 
-    println!("Found length {}", length);
+    println!("Found length {} with {} errors", length, err);
 
     let mut payload = bitvec![];
     while payload.len() < length {
