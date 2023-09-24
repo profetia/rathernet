@@ -57,20 +57,7 @@ async fn main() -> Result<()> {
             eprintln!("Transmitted: {}", bits.len());
         },
         async {
-            let mut buf = bitvec![];
-            let mut received = 0;
-            let mut id = 0;
-            while let Some(bits) = read_ather.next().await {
-                // if let Some(bits) = read_ather.next().await {
-                println!("packet ID: {} - {}", id, bits);
-                received += bits.len();
-                eprintln!("ID: {} - New: {} - Total: {}", id, bits.len(), received);
-                buf.extend(bits);
-                id += 1;
-                if received >= 10000 {
-                    break;
-                }
-            }
+            let buf = read_ather.next().await.unwrap();
             fs::write(
                 "output.txt",
                 buf.into_iter()
