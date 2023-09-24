@@ -315,7 +315,7 @@ async fn decode_frame(
     let symbol_len = config.symbols.0 .0.len();
     let conv = ConvCode::new(CONV_GENERATORS);
 
-    println!("Start decode a frame");
+    // println!("Start decode a frame");
 
     loop {
         if buf.len() >= preamble_len {
@@ -340,7 +340,7 @@ async fn decode_frame(
         }
     }
 
-    println!("Preamble found");
+    // println!("Preamble found");
 
     let mut length = bitvec![];
     while length.len() < LENGTH_FIELD_LEN {
@@ -350,10 +350,10 @@ async fn decode_frame(
             let value = signal::dot_product(&config.symbols.1 .0, &symbol);
             if value > 0. {
                 length.push(true);
-                println!("[{}] symbol 1 - {:?}", length.len(), value);
+                // println!("[{}] symbol 1 - {:?}", length.len(), value);
             } else {
                 length.push(false);
-                println!("[{}] symbol 0 - {:?}", length.len(), value);
+                // println!("[{}] symbol 0 - {:?}", length.len(), value);
             }
 
             *buf = buf.split_off(symbol_len);
@@ -365,10 +365,10 @@ async fn decode_frame(
         }
     }
 
-    let (length, err) = conv.decode(&length);
+    let (length, _err) = conv.decode(&length);
     let length = length.decode();
 
-    println!("Found length {} with {} errors", length, err);
+    // println!("Found length {} with {} errors", length, err);
 
     let mut payload = bitvec![];
     while payload.len() < length {
@@ -378,10 +378,10 @@ async fn decode_frame(
             let value = signal::dot_product(&config.symbols.1 .0, &symbol);
             if value > 0. {
                 payload.push(true);
-                println!("[{}] symbol 1 - {:?}", payload.len(), value);
+                // println!("[{}] symbol 1 - {:?}", payload.len(), value);
             } else {
                 payload.push(false);
-                println!("[{}] symbol 0 - {:?}", payload.len(), value);
+                // println!("[{}] symbol 0 - {:?}", payload.len(), value);
             }
 
             *buf = buf.split_off(symbol_len);
@@ -393,8 +393,8 @@ async fn decode_frame(
         }
     }
 
-    let (bits, err) = conv.decode(&payload);
-    println!("Payload decoded with {} errors", err);
+    let (bits, _err) = conv.decode(&payload);
+    // println!("Payload decoded with {} errors", err);
 
     Some(bits)
 }
