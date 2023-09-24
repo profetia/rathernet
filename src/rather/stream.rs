@@ -20,7 +20,7 @@ use bitvec::prelude::*;
 use code_rs::coding::hamming::standard;
 use cpal::SupportedStreamConfig;
 use std::{
-    fs, mem,
+    mem,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{self, Poll, Waker},
@@ -76,9 +76,7 @@ impl AtherOutputStream {
     pub async fn write(&self, bits: &BitSlice) {
         let mut frames = vec![self.config.warmup.0.clone()];
         frames.extend(encode_packet(&self.config, bits));
-        // fs::write("ref.json", format!("{:?}", frames.concat())).unwrap();
         let track = AudioTrack::new(self.config.stream_config.clone(), frames.concat().into());
-        // track.write_to_file("ref.wav").unwrap();
         self.stream.write(track).await;
     }
 
@@ -134,11 +132,11 @@ fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<AudioSample
     frames
 }
 
-trait AtherEncoding {
+trait AtherSymbolEncoding {
     fn encode(&self, symbols: (Symbol, Symbol)) -> Vec<Symbol>;
 }
 
-impl AtherEncoding for usize {
+impl AtherSymbolEncoding for usize {
     fn encode(&self, symbols: (Symbol, Symbol)) -> Vec<Symbol> {
         self.view_bits::<Lsb0>()
             .into_iter()
@@ -153,7 +151,7 @@ impl AtherEncoding for usize {
     }
 }
 
-impl AtherEncoding for BitSlice {
+impl AtherSymbolEncoding for BitSlice {
     fn encode(&self, symbols: (Symbol, Symbol)) -> Vec<Symbol> {
         let mut samples = vec![];
         for bit in self {
@@ -287,8 +285,7 @@ impl Stream for AtherInputStream {
     }
 }
 
-async fn decode_packet(
-    // async fn decode_frame(
+async fn decode_frame(
     config: &AtherStreamConfig,
     stream: &mut AudioInputStream<f32>,
     buf: &mut Vec<f32>,
@@ -302,19 +299,12 @@ async fn decode_packet(
     let symbol_len = config.symbols.0 .0.len();
     let conv = ConvCode::new(&[5, 7]);
 
-    println!("Start decode");
+    println!("Start decode a frame");
 
     loop {
-        println!(
-            "Looping on the preamble {}, expect {}",
-            buf.len(),
-            preamble_len
-        );
         if buf.len() >= preamble_len {
             let (index, value) = signal::synchronize(&config.preamble.0, buf);
-            println!("Got sync index {}", index);
             if value > CORR_THRESHOLD {
-                println!("Got index {} with {}", index, value);
                 if (index + preamble_len as isize) < (buf.len() as isize) {
                     // println!("Before preamble {:?}", buf[..index as usize].to_owned());
                     // println!(
@@ -323,29 +313,18 @@ async fn decode_packet(
                     // );
                     *buf = buf.split_off((index + preamble_len as isize) as usize);
                     break;
-                } else {
-                    println!("Failed to find a start, len {}", buf.len());
                 }
             } else {
-                println!(
-                    "Failed to conform the threshold, got {}, len {}",
-                    value,
-                    buf.len()
-                );
                 *buf = buf.split_off(buf.len() - preamble_len);
             }
         }
-
-        println!("Wait for more data");
         match stream.next().await {
             Some(sample) => buf.extend(sample.iter()),
             None => return None,
         }
-        println!("Done");
     }
 
     println!("Preamble found");
-    // println!("Remaining data {:?}", buf);
 
     let mut length = bitvec![];
     while length.len() < LENGTH_LEN {
@@ -355,12 +334,10 @@ async fn decode_packet(
             let value = signal::dot_product(&config.symbols.1 .0, &symbol);
             if value > 0. {
                 length.push(true);
-                // println!("[{}] symbol 1 - {:?}", index, value);
-                println!("[{}] symbol 1 - {:?}", length.len(), symbol);
+                println!("[{}] symbol 1 - {:?}", length.len(), value);
             } else {
                 length.push(false);
-                // println!("[{}] symbol 0 - {:?}", index, value);
-                println!("[{}] symbol 0 - {:?}", length.len(), symbol);
+                println!("[{}] symbol 0 - {:?}", length.len(), value);
             }
 
             *buf = buf.split_off(symbol_len);
@@ -384,12 +361,10 @@ async fn decode_packet(
             let value = signal::dot_product(&config.symbols.1 .0, &symbol);
             if value > 0. {
                 payload.push(true);
-                // println!("[{}] symbol 1 - {:?}", index, value);
-                println!("[{}] symbol 1 - {:?}", payload.len(), symbol);
+                println!("[{}] symbol 1 - {:?}", payload.len(), value);
             } else {
                 payload.push(false);
-                // println!("[{}] symbol 0 - {:?}", index, value);
-                println!("[{}] symbol 0 - {:?}", payload.len(), symbol);
+                println!("[{}] symbol 0 - {:?}", payload.len(), value);
             }
 
             *buf = buf.split_off(symbol_len);
@@ -407,26 +382,27 @@ async fn decode_packet(
     Some(bits)
 }
 
-// async fn decode_packet(
-//     config: &AtherStreamConfig,
-//     stream: &Arc<sync::Mutex<AudioInputStream<f32>>>,
-//     buf: &mut Vec<f32>,
-// ) -> Option<BitVec> {
-//     let mut bits = bitvec![];
-//     loop {
-//         match decode_frame(config, stream, buf).await {
-//             Some(frame) => {
-//                 if frame.is_empty() {
-//                     break;
-//                 } else {
-//                     bits.extend(frame);
-//                 }
-//             }
-//             None => return None,
-//         }
-//     }
-//     Some(bits)
-// }
+async fn decode_packet(
+    config: &AtherStreamConfig,
+    stream: &mut AudioInputStream<f32>,
+    buf: &mut Vec<f32>,
+) -> Option<BitVec> {
+    let mut bits = bitvec![];
+    loop {
+        match decode_frame(config, stream, buf).await {
+            Some(frame) => {
+                let len = frame.len();
+                bits.extend(frame);
+                eprintln!("Recieved {}, New {}", bits.len(), len);
+                if len != PAYLOAD_LEN {
+                    break;
+                }
+            }
+            None => return None,
+        }
+    }
+    Some(bits)
+}
 
 impl ContinuousStream for AtherInputStream {
     fn resume(&self) {
@@ -438,11 +414,11 @@ impl ContinuousStream for AtherInputStream {
     }
 }
 
-trait AtherDecoding {
+trait AtherBitDecoding {
     fn decode(&self) -> usize;
 }
 
-impl AtherDecoding for BitVec {
+impl AtherBitDecoding for BitVec {
     fn decode(&self) -> usize {
         let mut result = 0usize;
         for (index, bit) in self.iter().enumerate() {
@@ -454,7 +430,7 @@ impl AtherDecoding for BitVec {
     }
 }
 
-impl AtherDecoding for &BitSlice {
+impl AtherBitDecoding for &BitSlice {
     fn decode(&self) -> usize {
         let mut result = 0usize;
         for (index, bit) in self.iter().enumerate() {
