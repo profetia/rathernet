@@ -29,11 +29,13 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_stream::{Stream, StreamExt};
 
 const WARMUP_LEN: usize = 8;
-const PREAMBLE_LEN: usize = 32; // 8 | 16
-const PAYLOAD_LEN: usize = 64; // 128
+const PREAMBLE_LEN: usize = 32; // 8 | 16 | 32
+const PAYLOAD_LEN: usize = 64; // 64 | 128
 const CORR_THRESHOLD: f32 = 0.15;
+const CONV_GENERATORS: [usize; 2] = [171, 133];
 
-const LENGTH_LEN: usize = (PAYLOAD_LEN * 2 + 4).ilog2() as usize + 1;
+const CONV_ORDER: usize = 7;
+const LENGTH_LEN: usize = ((PAYLOAD_LEN + CONV_ORDER) << 1).ilog2() as usize + 1;
 
 #[derive(Debug, Clone)]
 pub struct AtherStreamConfig {
@@ -94,7 +96,7 @@ impl AtherOutputStream {
 }
 
 fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<AudioSamples<f32>> {
-    let conv = ConvCode::new(&[5, 7]);
+    let conv = ConvCode::new(&CONV_GENERATORS);
     let mut frames = vec![];
     for chunk in bits.chunks(PAYLOAD_LEN) {
         let payload = conv.encode(chunk).encode(config.symbols.clone());
@@ -299,7 +301,7 @@ async fn decode_frame(
     );
     let preamble_len = config.preamble.0.len();
     let symbol_len = config.symbols.0 .0.len();
-    let conv = ConvCode::new(&[5, 7]);
+    let conv = ConvCode::new(&CONV_GENERATORS);
 
     println!("Start decode a frame");
 
@@ -329,7 +331,7 @@ async fn decode_frame(
     println!("Preamble found");
 
     let mut length = bitvec![];
-    while length.len() < LENGTH_LEN * 2 + 4 {
+    while length.len() < (LENGTH_LEN + CONV_ORDER) << 1 {
         if buf.len() >= symbol_len {
             let mut symbol = buf[..symbol_len].to_owned();
             symbol.band_pass(sample_rate, band_pass);
