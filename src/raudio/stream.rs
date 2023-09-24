@@ -7,12 +7,15 @@ use cpal::{
     traits::{DeviceTrait, StreamTrait},
     FromSample, SampleFormat, SizedSample, SupportedStreamConfig, SupportedStreamConfigsError,
 };
-use crossbeam::channel::{self, Receiver, Sender};
+use crossbeam::{
+    channel::{self, Receiver, Sender},
+    sync::ShardedLock,
+};
 use rodio::{Sample, Sink, Source};
 use std::{
     future::Future,
     mem,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex},
     task::{Poll, Waker},
     thread,
     time::Duration,
@@ -235,7 +238,7 @@ where
         config: SupportedStreamConfig,
     ) -> Result<Self> {
         let (sender, reciever) = channel::unbounded::<AudioSamples<S>>();
-        let task = Arc::new(RwLock::new(AudioInputTaskState::Pending));
+        let task = Arc::new(ShardedLock::new(AudioInputTaskState::Pending));
 
         let stream = match config.sample_format() {
             SampleFormat::I8 => {
@@ -341,7 +344,7 @@ where
     }
 }
 
-type AudioInputTask = Arc<RwLock<AudioInputTaskState>>;
+type AudioInputTask = Arc<ShardedLock<AudioInputTaskState>>;
 
 enum AudioInputTaskState {
     Pending,
