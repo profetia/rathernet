@@ -30,13 +30,24 @@ use tokio_stream::{Stream, StreamExt};
 const WARMUP_LEN: usize = 8;
 const PREAMBLE_LEN: usize = 32; // 8 | 16 | 32
 const CORR_THRESHOLD: f32 = 0.15;
-const CONV_GENERATORS: [usize; 2] = [171, 133];
-const CONV_ORDER: usize = 7;
+const CONV_GENERATORS: &[usize] = &[171, 133];
+const CONV_FACTOR: usize = CONV_GENERATORS.len();
+const CONV_ORDER: usize = {
+    let mut max = 0usize;
+    let mut index = 0;
+    while index < CONV_GENERATORS.len() {
+        if max < CONV_GENERATORS[index] {
+            max = CONV_GENERATORS[index];
+        }
+        index += 1;
+    }
+    max.ilog2() as usize
+};
 
 const PAYLOAD_LEN: usize = 64; // 64 | 128
-const PAYLOAD_FIELD_LEN: usize = (PAYLOAD_LEN + CONV_ORDER) << 1;
+const PAYLOAD_FIELD_LEN: usize = (PAYLOAD_LEN + CONV_ORDER) * CONV_FACTOR;
 const LENGTH_LEN: usize = PAYLOAD_FIELD_LEN.ilog2() as usize + 1;
-const LENGTH_FIELD_LEN: usize = (LENGTH_LEN + CONV_ORDER) << 1;
+const LENGTH_FIELD_LEN: usize = (LENGTH_LEN + CONV_ORDER) * CONV_FACTOR;
 
 #[derive(Debug, Clone)]
 pub struct AtherStreamConfig {
@@ -97,7 +108,7 @@ impl AtherOutputStream {
 }
 
 fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<AudioSamples<f32>> {
-    let conv = ConvCode::new(&CONV_GENERATORS);
+    let conv = ConvCode::new(CONV_GENERATORS);
     let mut frames = vec![];
     for chunk in bits.chunks(PAYLOAD_LEN) {
         let payload = conv.encode(chunk).encode(config.symbols.clone());
@@ -302,7 +313,7 @@ async fn decode_frame(
     );
     let preamble_len = config.preamble.0.len();
     let symbol_len = config.symbols.0 .0.len();
-    let conv = ConvCode::new(&CONV_GENERATORS);
+    let conv = ConvCode::new(CONV_GENERATORS);
 
     println!("Start decode a frame");
 
