@@ -104,6 +104,10 @@ impl ConvCode {
     }
 
     pub fn decode(&self, bits: &BitSlice) -> (BitVec, u32) {
+        if bits.is_empty() {
+            return (bitvec![], 0);
+        }
+
         let words = bits.chunks(self.factor);
         let mut paths = vec![Path::new(0)];
 
