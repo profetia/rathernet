@@ -7,14 +7,12 @@ use cpal::{
     traits::{DeviceTrait, StreamTrait},
     FromSample, SampleFormat, SizedSample, SupportedStreamConfig, SupportedStreamConfigsError,
 };
+use crossbeam::channel::{self, Receiver, Sender};
 use rodio::{Sample, Sink, Source};
 use std::{
     future::Future,
     mem,
-    sync::{
-        mpsc::{self, Receiver, Sender},
-        Arc, Mutex, RwLock,
-    },
+    sync::{Arc, Mutex, RwLock},
     task::{Poll, Waker},
     thread,
     time::Duration,
@@ -40,7 +38,7 @@ where
 {
     fn try_from_stream(stream: AsioOutputStream) -> Result<Self> {
         let sink = Arc::new(Sink::try_new(&stream.handle)?);
-        let (sender, receiver) = mpsc::channel::<AudioOutputTask<S>>();
+        let (sender, receiver) = channel::unbounded::<AudioOutputTask<S>>();
         thread::spawn({
             let sink = Arc::clone(&sink);
             move || {
@@ -236,7 +234,7 @@ where
         device: &AsioDevice,
         config: SupportedStreamConfig,
     ) -> Result<Self> {
-        let (sender, reciever) = mpsc::channel::<AudioSamples<S>>();
+        let (sender, reciever) = channel::unbounded::<AudioSamples<S>>();
         let task = Arc::new(RwLock::new(AudioInputTaskState::Pending));
 
         let stream = match config.sample_format() {
