@@ -8,7 +8,6 @@
 //! and its length is encoded in the length field.
 
 use super::{
-    conv::ConvCode,
     signal::{self, BandPass},
     Preamble, Symbol, Warmup,
 };
@@ -17,6 +16,7 @@ use crate::raudio::{
 };
 use bitvec::prelude::*;
 use cpal::SupportedStreamConfig;
+use raptor_code::{SourceBlockDecoder, SourceBlockEncoder};
 use std::{
     mem,
     pin::Pin,
@@ -30,25 +30,13 @@ use tokio_stream::{Stream, StreamExt};
 const WARMUP_LEN: usize = 8;
 const PREAMBLE_LEN: usize = 64; // 8 | 16 | 32 | 64
 
-const CONV_GENERATORS: &[usize] = &[171, 133];
-const CONV_FACTOR: usize = CONV_GENERATORS.len();
-const CONV_ORDER: usize = {
-    let mut max = 0usize;
-    let mut index = 0;
-    while index < CONV_GENERATORS.len() {
-        if max < CONV_GENERATORS[index] {
-            max = CONV_GENERATORS[index];
-        }
-        index += 1;
-    }
-    max.ilog2() as usize
-};
-
 const CORR_THRESHOLD: f32 = 0.15;
 
-const PAYLOAD_LEN: usize = 127; // 63 | 127
-const LENGTH_LEN: usize = PAYLOAD_LEN.ilog2() as usize + 1;
-const BODY_LEN: usize = (LENGTH_LEN + PAYLOAD_LEN + CONV_ORDER) * CONV_FACTOR;
+const PAYLOAD_LEN: usize = 8;
+const PAYLOAD_BITS: usize = PAYLOAD_LEN * 8;
+const LENGTH_LEN: usize = 1;
+const BODY_LEN: usize = LENGTH_LEN + PAYLOAD_LEN * 2 - 1;
+const BODY_BITS: usize = BODY_LEN * 9;
 
 #[derive(Debug, Clone)]
 pub struct AtherStreamConfig {
@@ -109,37 +97,65 @@ impl AtherOutputStream {
 }
 
 fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<AudioSamples<f32>> {
-    let conv = ConvCode::new(CONV_GENERATORS);
     let mut frames = vec![];
-    for chunk in bits.chunks(PAYLOAD_LEN) {
-        let mut body = chunk.len().view_bits()[..LENGTH_LEN].to_owned();
-        body.extend(chunk);
-        if chunk.len() < PAYLOAD_LEN {
-            body.resize(LENGTH_LEN + PAYLOAD_LEN, false);
+    for chunk in bits.chunks(PAYLOAD_BITS) {
+        let mut source = vec![];
+        source.push(chunk.len() as u8);
+
+        let mut payload = chunk.to_owned();
+        if payload.len() < PAYLOAD_BITS {
+            payload.resize(PAYLOAD_BITS, false);
+        }
+        for chunk in payload.chunks(8) {
+            source.push(chunk.decode() as u8);
+        }
+
+        let mut encoder = SourceBlockEncoder::new(&source, PAYLOAD_LEN + LENGTH_LEN);
+
+        let mut body = bitvec![];
+        body.reserve(BODY_BITS);
+        for esi in 0..BODY_LEN as u32 {
+            let byte = encoder.fountain(esi)[0];
+            let bits = byte.view_bits::<Lsb0>();
+            let parity = bits[0..8].iter().fold(0, |acc, bit| acc ^ *bit as u8);
+            body.push(parity != 0);
+            body.extend(&bits[0..8]);
         }
 
         frames.push(
             [
                 config.preamble.0.clone(),
-                conv.encode(&body)
-                    .encode(config.symbols.clone())
-                    .into_iter()
-                    .collect(),
+                body.encode(config.symbols.clone()).into_iter().collect(),
             ]
             .concat()
             .into(),
         );
     }
-    if bits.len() % PAYLOAD_LEN == 0 {
-        let body = bitvec![0; LENGTH_LEN + PAYLOAD_LEN];
+    if bits.len() % PAYLOAD_BITS == 0 {
+        let mut source = vec![];
+        source.push(0_u8);
+
+        let payload = bitvec![0; PAYLOAD_BITS];
+        for chunk in payload.chunks(8) {
+            source.push(chunk.decode() as u8);
+        }
+
+        let mut encoder = SourceBlockEncoder::new(&source, PAYLOAD_LEN + LENGTH_LEN);
+
+        let mut body = bitvec![];
+        body.reserve(BODY_BITS);
+        for esi in 0..BODY_LEN as u32 {
+            let byte = encoder.fountain(esi)[0];
+            let bits = byte.view_bits::<Lsb0>();
+            let parity = bits[0..8].iter().fold(0, |acc, bit| acc ^ *bit as u8);
+            body.push(parity != 0);
+            body.extend(&bits[0..8]);
+        }
 
         frames.push(
             [
                 config.preamble.0.clone(),
-                conv.encode(&body)
-                    .encode(config.symbols.clone())
-                    .into_iter()
-                    .collect(),
+                body.encode(config.symbols.clone()).into_iter().collect(),
             ]
             .concat()
             .into(),
@@ -314,7 +330,6 @@ async fn decode_frame(
     );
     let preamble_len = config.preamble.0.len();
     let symbol_len = config.symbols.0 .0.len();
-    let conv = ConvCode::new(CONV_GENERATORS);
 
     println!("Start decode a frame");
 
@@ -339,8 +354,8 @@ async fn decode_frame(
     println!("Preamble found");
 
     let mut body = bitvec![];
-    body.reserve(BODY_LEN);
-    while body.len() < BODY_LEN {
+    body.reserve(BODY_BITS);
+    while body.len() < BODY_BITS {
         if buf.len() >= symbol_len {
             let mut symbol = buf[..symbol_len].to_owned();
             symbol.band_pass(sample_rate, band_pass);
@@ -362,12 +377,38 @@ async fn decode_frame(
         }
     }
 
-    let (body, err) = conv.decode(&body);
-    let length = (&body[..LENGTH_LEN]).decode();
+    let mut decoder = SourceBlockDecoder::new(PAYLOAD_LEN + LENGTH_LEN);
+    for (esi, chunk) in body
+        .chunks(9)
+        .filter(|chunk| {
+            let parity = chunk[0] as u8;
+            let recieved = chunk[1..].iter().fold(0, |acc, bit| acc ^ *bit as u8);
+            println!("Parity: {}, got {}", parity, recieved);
+            parity == recieved
+        })
+        .enumerate()
+    {
+        decoder.push_encoding_symbol(&[(&chunk[1..]).decode() as u8], esi as u32);
+        if decoder.fully_specified() {
+            break;
+        }
+    }
+
+    let body = decoder.decode(PAYLOAD_LEN + LENGTH_LEN).unwrap();
+    let length = if body[0] <= PAYLOAD_BITS as u8 {
+        body[0] as usize
+    } else {
+        PAYLOAD_BITS
+    };
     println!("Found length {}", length);
 
-    let payload = body[LENGTH_LEN..(LENGTH_LEN + length)].to_owned();
-    println!("Payload decoded with {} errors", err);
+    let payload = body[1..]
+        .iter()
+        .flat_map(|byte| byte.view_bits::<Lsb0>())
+        .collect::<BitVec>()[..length]
+        .to_owned();
+
+    println!("Found payload {}", &payload[..]);
 
     Some(payload)
 }
@@ -385,7 +426,7 @@ async fn decode_packet(
                 bits.extend(frame);
                 println!("Recieved {}, New {}", bits.len(), len);
                 eprintln!("Recieved {}, New {}", bits.len(), len);
-                if len != PAYLOAD_LEN {
+                if len != PAYLOAD_BITS {
                     break;
                 }
             }
