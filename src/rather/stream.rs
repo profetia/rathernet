@@ -7,8 +7,6 @@
 //! CONV_GENERATORS. The payload is padded with zeros to make it a multiple of PAYLOAD_LEN symbols,
 //! and its length is encoded in the length field.
 
-// TODO: implement the parity of length field and checksum field
-
 use super::{
     conv::ConvCode,
     signal::{self, BandPass},
@@ -30,16 +28,27 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_stream::{Stream, StreamExt};
 
 const WARMUP_LEN: usize = 8;
-const PREAMBLE_LEN: usize = 32; // 8 | 16 | 32
+const PREAMBLE_LEN: usize = 64; // 8 | 16 | 32 | 64
 
-const CONV_GENERATORS: [usize; 2] = [171, 133];
-const CONV_ORDER: usize = 7;
+const CONV_GENERATORS: &[usize] = &[171, 133];
+const CONV_FACTOR: usize = CONV_GENERATORS.len();
+const CONV_ORDER: usize = {
+    let mut max = 0usize;
+    let mut index = 0;
+    while index < CONV_GENERATORS.len() {
+        if max < CONV_GENERATORS[index] {
+            max = CONV_GENERATORS[index];
+        }
+        index += 1;
+    }
+    max.ilog2() as usize
+};
 
 const CORR_THRESHOLD: f32 = 0.15;
 
-const PAYLOAD_LEN: usize = 63; // 63 | 127
+const PAYLOAD_LEN: usize = 127; // 63 | 127
 const LENGTH_LEN: usize = PAYLOAD_LEN.ilog2() as usize + 1;
-const BODY_LEN: usize = (LENGTH_LEN + PAYLOAD_LEN + CONV_ORDER) << 1;
+const BODY_LEN: usize = (LENGTH_LEN + PAYLOAD_LEN + CONV_ORDER) * CONV_FACTOR;
 
 #[derive(Debug, Clone)]
 pub struct AtherStreamConfig {
@@ -100,7 +109,7 @@ impl AtherOutputStream {
 }
 
 fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<AudioSamples<f32>> {
-    let conv = ConvCode::new(&CONV_GENERATORS);
+    let conv = ConvCode::new(CONV_GENERATORS);
     let mut frames = vec![];
     for chunk in bits.chunks(PAYLOAD_LEN) {
         let mut body = chunk.len().view_bits()[..LENGTH_LEN].to_owned();
@@ -305,7 +314,7 @@ async fn decode_frame(
     );
     let preamble_len = config.preamble.0.len();
     let symbol_len = config.symbols.0 .0.len();
-    let conv = ConvCode::new(&CONV_GENERATORS);
+    let conv = ConvCode::new(CONV_GENERATORS);
 
     println!("Start decode a frame");
 
@@ -374,6 +383,7 @@ async fn decode_packet(
             Some(frame) => {
                 let len = frame.len();
                 bits.extend(frame);
+                println!("Recieved {}, New {}", bits.len(), len);
                 eprintln!("Recieved {}, New {}", bits.len(), len);
                 if len != PAYLOAD_LEN {
                     break;
