@@ -20,6 +20,7 @@ use cpal::SupportedStreamConfig;
 use std::{
     fs, mem,
     pin::Pin,
+    slice::Chunks,
     sync::{Arc, Mutex},
     task::{self, Poll, Waker},
     time::Duration,
@@ -280,8 +281,8 @@ impl Stream for AtherInputStream {
     }
 }
 
-// async fn decode_packet(
-async fn decode_frame(
+async fn decode_packet(
+    // async fn decode_frame(
     config: &AtherStreamConfig,
     stream: &mut AudioInputStream<f32>,
     buf: &mut Vec<f32>,
@@ -294,19 +295,19 @@ async fn decode_frame(
     let preamble_len = config.preamble.0.len();
     let symbol_len = config.symbols.0 .0.len();
 
-    // println!("Start decode");
+    println!("Start decode");
 
     loop {
-        // println!(
-        //     "Looping on the preamble {}, expect {}",
-        //     buf.len(),
-        //     preamble_len
-        // );
+        println!(
+            "Looping on the preamble {}, expect {}",
+            buf.len(),
+            preamble_len
+        );
         if buf.len() >= preamble_len {
             let (index, value) = signal::synchronize(&config.preamble.0, buf);
-            // println!("Got sync index {}", index);
+            println!("Got sync index {}", index);
             if value > CORR_THRESHOLD {
-                // println!("Got index {} with {}", index, value);
+                println!("Got index {} with {}", index, value);
                 if (index + preamble_len as isize) < (buf.len() as isize) {
                     // println!("Before preamble {:?}", buf[..index as usize].to_owned());
                     // println!(
@@ -316,27 +317,27 @@ async fn decode_frame(
                     *buf = buf.split_off((index + preamble_len as isize) as usize);
                     break;
                 } else {
-                    // println!("Failed to find a start, len {}", buf.len());
+                    println!("Failed to find a start, len {}", buf.len());
                 }
             } else {
-                // println!(
-                //     "Failed to conform the threshold, got {}, len {}",
-                //     value,
-                //     buf.len()
-                // );
+                println!(
+                    "Failed to conform the threshold, got {}, len {}",
+                    value,
+                    buf.len()
+                );
                 *buf = buf.split_off(buf.len() - preamble_len);
             }
         }
 
-        // println!("Wait for more data");
+        println!("Wait for more data");
         match stream.next().await {
             Some(sample) => buf.extend(sample.iter()),
             None => return None,
         }
-        // println!("Done");
+        println!("Done");
     }
 
-    // println!("Preamble found");
+    println!("Preamble found");
     // println!("Remaining data {:?}", buf);
 
     let (mut length, mut index) = (0usize, 0usize);
@@ -348,10 +349,10 @@ async fn decode_frame(
             if value > 0. {
                 length += 1 << index;
                 // println!("[{}] symbol 1 - {:?}", index, value);
-                // println!("[{}] symbol 1 - {:?}", index, symbol);
+                println!("[{}] symbol 1 - {:?}", index, symbol);
             } else {
                 // println!("[{}] symbol 0 - {:?}", index, value);
-                // println!("[{}] symbol 0 - {:?}", index, symbol);
+                println!("[{}] symbol 0 - {:?}", index, symbol);
             }
 
             *buf = buf.split_off(symbol_len);
@@ -364,7 +365,7 @@ async fn decode_frame(
         }
     }
 
-    // println!("Found length {}", length);
+    println!("Found length {}", length);
 
     let (mut bits, mut index) = (bitvec![], 0usize);
     while index < length {
@@ -375,11 +376,11 @@ async fn decode_frame(
             if value > 0. {
                 bits.push(true);
                 // println!("[{}] symbol 1 - {:?}", index, value);
-                // println!("[{}] symbol 1 - {:?}", index, symbol);
+                println!("[{}] symbol 1 - {:?}", index, symbol);
             } else {
                 bits.push(false);
                 // println!("[{}] symbol 0 - {:?}", index, value);
-                // println!("[{}] symbol 0 - {:?}", index, symbol);
+                println!("[{}] symbol 0 - {:?}", index, symbol);
             }
 
             *buf = buf.split_off(symbol_len);
@@ -395,27 +396,26 @@ async fn decode_frame(
     Some(bits)
 }
 
-async fn decode_packet(
-    config: &AtherStreamConfig,
-    stream: &mut AudioInputStream<f32>,
-    buf: &mut Vec<f32>,
-) -> Option<BitVec> {
-    let mut bits = bitvec![];
-    loop {
-        match decode_frame(config, stream, buf).await {
-            Some(frame) => {
-                let len = frame.len();
-                bits.extend(frame);
-                eprintln!("Recieved {}, New {}", bits.len(), len);
-                if len != PAYLOAD_LEN {
-                    break;
-                }
-            }
-            None => return None,
-        }
-    }
-    Some(bits)
-}
+// async fn decode_packet(
+//     config: &AtherStreamConfig,
+//     stream: &Arc<sync::Mutex<AudioInputStream<f32>>>,
+//     buf: &mut Vec<f32>,
+// ) -> Option<BitVec> {
+//     let mut bits = bitvec![];
+//     loop {
+//         match decode_frame(config, stream, buf).await {
+//             Some(frame) => {
+//                 if frame.is_empty() {
+//                     break;
+//                 } else {
+//                     bits.extend(frame);
+//                 }
+//             }
+//             None => return None,
+//         }
+//     }
+//     Some(bits)
+// }
 
 impl ContinuousStream for AtherInputStream {
     fn resume(&self) {
