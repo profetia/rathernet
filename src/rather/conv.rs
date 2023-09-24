@@ -91,8 +91,9 @@ type Transition<'a> = (usize, u32, u32, &'a Path, bool);
 impl ConvCode {
     pub fn encode(&self, bits: &BitSlice) -> BitVec {
         let mut bits = bits.to_owned();
-        bits.resize(bits.len() + self.order, false);
         let mut outputs = bitvec![];
+        outputs.reserve(bits.len() * self.factor + self.order);
+        bits.resize(bits.len() + self.order, false);
 
         let mut now = 0;
         for bit in bits.iter() {
