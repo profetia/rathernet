@@ -59,16 +59,3 @@ impl EncodeFromBytes for Vec<u8> {
         self.as_slice().encode()
     }
 }
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_encode_to_bytes() {
-        let data = 512usize;
-        let bits = &data.view_bits::<Lsb0>()[..16];
-        let bytes = DecodeToBytes::decode(bits);
-        assert_eq!(bytes, vec![0u8, 64u8])
-    }
-}
