@@ -10,9 +10,11 @@ anyhow = "1.0.75"
 bitvec = "1.0.1"
 clap = { version = "4.4.3", features = ["derive"] }
 cpal = { version = "0.15.2", features = ["asio"] }
+crc = "3.0.1"
 crossbeam = "0.8.2"
 hound = "3.5.0"
 realfft = "3.3.0"
+reed-solomon-erasure = { version = "6.0.0", features = ["simd-accel"] }
 rodio = "0.17.1"
 thiserror = "1.0.48"
 tokio = { version = "1.32.0", features = ["full"] }
