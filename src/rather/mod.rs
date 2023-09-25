@@ -1,4 +1,5 @@
 mod conv;
+mod encode;
 mod frame;
 mod signal;
 mod stream;

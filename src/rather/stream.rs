@@ -9,6 +9,7 @@
 
 use super::{
     conv::ConvCode,
+    encode::BitDecoding,
     signal::{self, BandPass},
     Preamble, Symbol, Warmup,
 };
@@ -428,33 +429,5 @@ impl ContinuousStream for AtherInputStream {
 
     fn suspend(&self) {
         self.sender.send(AtherInputTaskCmd::Suspended).unwrap();
-    }
-}
-
-trait AtherBitDecoding {
-    fn decode(&self) -> usize;
-}
-
-impl AtherBitDecoding for BitVec {
-    fn decode(&self) -> usize {
-        let mut result = 0usize;
-        for (index, bit) in self.iter().enumerate() {
-            if *bit {
-                result |= 1 << index;
-            }
-        }
-        result
-    }
-}
-
-impl AtherBitDecoding for &BitSlice {
-    fn decode(&self) -> usize {
-        let mut result = 0usize;
-        for (index, bit) in self.iter().enumerate() {
-            if *bit {
-                result |= 1 << index;
-            }
-        }
-        result
     }
 }
