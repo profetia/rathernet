@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use realfft::{num_complex::Complex, RealFftPlanner};
 use std::f32::consts::PI;
 
@@ -38,22 +39,26 @@ fn irfft(source: &[Complex<f32>], len: usize) -> Box<[f32]> {
 pub fn correlate(volume: &[f32], kernel: &[f32]) -> Box<[f32]> {
     let full = volume.len() + kernel.len() - 1;
 
-    let volume = volume.to_vec().normalize();
-    let mut kernel = kernel.to_vec().normalize();
-    kernel.reverse();
-
-    let volume_fft = rfft(&volume, full);
-    let kernel_fft = rfft(&kernel, full);
+    let (volume_fft, kernel_fft) = rayon::join(
+        || {
+            let volume = volume.to_vec().normalize();
+            rfft(&volume, full)
+        },
+        || {
+            let mut kernel = kernel.to_vec().normalize();
+            kernel.reverse();
+            rfft(&kernel, full)
+        },
+    );
 
     let corr_ifft = volume_fft
-        .iter()
-        .zip(kernel_fft.iter())
+        .par_iter()
+        .zip(kernel_fft.par_iter())
         .map(|(a, b)| a * b)
         .collect::<Vec<_>>();
 
     irfft(&corr_ifft, full)
-        .iter()
-        .copied()
+        .par_iter()
         .map(|item| item / full as f32)
         .collect()
 }
@@ -120,7 +125,10 @@ pub fn synchronize(volume: &[f32], kernel: &[f32]) -> (isize, f32) {
 }
 
 pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).fold(0., |acc, (a, b)| acc + a * b)
+    a.par_iter()
+        .zip(b.par_iter())
+        .map(|(a, b)| a * b)
+        .sum::<f32>()
 }
 
 pub trait LowPass
