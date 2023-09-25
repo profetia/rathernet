@@ -58,6 +58,7 @@ async fn main() -> Result<()> {
         },
         async {
             let buf = read_ather.next().await.unwrap();
+            eprintln!("Received: {}", buf.len());
             fs::write(
                 "output.txt",
                 buf.into_iter()
