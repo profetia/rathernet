@@ -44,10 +44,10 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_stream::{Stream, StreamExt};
 
 const WARMUP_SYMBOL_LEN: usize = 8;
-const PREAMBLE_SYMBOL_LEN: usize = 64; // 8 | 16 | 32 | 64
+const PREAMBLE_SYMBOL_LEN: usize = 32; // 8 | 16 | 32 | 64
 const PREAMBLE_CORR_THRESHOLD: f32 = 0.15;
 
-const CONV_GENERATORS: &[usize] = &[171, 133];
+const CONV_GENERATORS: &[usize] = &[5, 7];
 const CONV_FACTOR: usize = CONV_GENERATORS.len();
 const CONV_ORDER: usize = {
     let mut max = 0usize;
@@ -67,7 +67,7 @@ const META_RESERVED_BITS_LEN: usize = 2;
 const META_BITS_LEN: usize = META_FLAG_BITS_LEN + META_FLAG_BITS_LEN + META_RESERVED_BITS_LEN;
 
 const PARITY_ALGORITHM: Crc<u16> = Crc::<u16>::new(&CRC_16_IBM_SDLC);
-const PARITY_RATIO: f32 = 0.5;
+const PARITY_RATIO: f32 = 0.25;
 const PARITY_BYTE_LEN: usize = 2;
 const PARITY_BITS_LEN: usize = PARITY_BYTE_LEN * 8;
 
