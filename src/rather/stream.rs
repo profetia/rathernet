@@ -33,7 +33,6 @@ use crate::{
 use bitvec::prelude::*;
 use cpal::SupportedStreamConfig;
 use crc::{Crc, CRC_16_IBM_SDLC};
-use rayon::prelude::*;
 use reed_solomon_erasure::galois_8::ReedSolomon;
 use std::{
     mem,
@@ -145,8 +144,6 @@ impl AtherOutputStream {
 fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<AudioSamples<f32>> {
     let mut shards = bits
         .chunks(PAYLOAD_BITS_LEN)
-        .collect::<Vec<_>>()
-        .into_par_iter()
         .map(|chunk| {
             let length = DecodeToBytes::decode(&chunk.len().view_bits()[..LENGTH_BITS_LEN]);
             let payload = DecodeToBytes::decode(chunk);
@@ -175,22 +172,17 @@ fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<AudioSample
 
     let conv = ConvCode::new(CONV_GENERATORS);
     shards
-        .into_par_iter()
+        .into_iter()
         .enumerate()
         .map(|(index, shard)| {
-            let (meta, parity) = rayon::join(
-                || {
-                    let mut meta = bitvec![];
-                    meta.push(index == data_shards + parity_shards - 1);
-                    meta.push(index < data_shards);
-                    meta.resize(META_BITS_LEN, false);
-                    conv.encode(&meta)
-                },
-                || {
-                    let parity = PARITY_ALGORITHM.checksum(&shard) as usize;
-                    parity.view_bits::<Lsb0>()[..PARITY_BITS_LEN].to_owned()
-                },
-            );
+            let mut meta = bitvec![];
+            meta.push(index == data_shards + parity_shards - 1);
+            meta.push(index < data_shards);
+            meta.extend(bitvec![0; META_RESERVED_BITS_LEN]);
+            meta = conv.encode(&meta);
+
+            let parity = PARITY_ALGORITHM.checksum(&shard) as usize;
+            let parity = &parity.view_bits::<Lsb0>()[..PARITY_BITS_LEN];
 
             let mut header = bitvec![];
             header.extend(meta);
@@ -204,7 +196,7 @@ fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<AudioSample
 
             let mut samples = vec![];
             samples.push(config.preamble.0.clone());
-            samples.extend(frame.into_iter().map(|symbol| symbol.0));
+            samples.extend(frame.into_iter().map(|symbol| symbol.0).collect::<Vec<_>>());
 
             samples.concat().into()
         })

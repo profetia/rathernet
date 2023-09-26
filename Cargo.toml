@@ -14,7 +14,6 @@ crc = "3.0.1"
 crossbeam = "0.8.2"
 hound = "3.5.0"
 num = "0.4.1"
-rayon = "1.8.0"
 realfft = "3.3.0"
 reed-solomon-erasure = { version = "6.0.0", features = ["simd-accel"] }
 rodio = "0.17.1"
