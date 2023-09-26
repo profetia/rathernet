@@ -11,3 +11,6 @@ target/
 
 # Environment variable for build scripts
 env.*.ps1
+
+# VTune Amplifier profiling files
+perf/
