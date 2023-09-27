@@ -18,7 +18,7 @@ pub fn rfft(source: &[f32], len: usize) -> Box<[Complex<f32>]> {
     spectrum.into()
 }
 
-fn irfft(source: &[Complex<f32>], len: usize) -> Box<[f32]> {
+pub fn irfft(source: &[Complex<f32>], len: usize) -> Box<[f32]> {
     let mut real_planner = RealFftPlanner::<f32>::new();
     let fft = real_planner.plan_fft_inverse(len);
 

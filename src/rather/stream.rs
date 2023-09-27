@@ -304,6 +304,29 @@ impl AtherInputStream {
     }
 }
 
+impl AtherInputStream {
+    pub async fn read(&mut self) -> BitVec {
+        let mut result = bitvec![];
+        while let Some(data) = self.next().await {
+            result.extend(data.iter())
+        }
+        result
+    }
+
+    pub async fn read_timeout(&mut self, timeout: Duration) -> BitVec {
+        let mut result = bitvec![];
+        tokio::select! {
+            _ = async {
+                while let Some(data) = self.next().await {
+                    result.extend(data.iter());
+                }
+            } => {},
+            _ = tokio::time::sleep(timeout) => {},
+        };
+        result
+    }
+}
+
 enum AtherInputTaskCmd {
     Running,
     Suspended,
