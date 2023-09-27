@@ -71,57 +71,33 @@ impl AtherOutputStream {
 
 impl AtherOutputStream {
     pub async fn write(&self, bits: &BitSlice) {
-        let mut frames = vec![self.config.warmup.0.clone()];
-        frames.extend(encode_packet(&self.config, bits));
-        let track = AudioTrack::new(self.config.stream_config.clone(), frames.concat().into());
+        let mut frame = vec![self.config.warmup.0.clone()];
+        frame.push(encode_frame(&self.config, bits));
+        let track = AudioTrack::new(self.config.stream_config.clone(), frame.concat().into());
         self.stream.write(track).await;
     }
 
     pub async fn write_timeout(&self, bits: &BitSlice, timeout: Duration) {
-        let mut frames = vec![self.config.warmup.0.clone()];
-        frames.extend(encode_packet(&self.config, bits));
-        let track = AudioTrack::new(self.config.stream_config.clone(), frames.concat().into());
-        tokio::select! {
-            _ = async {
-                self.stream.write(track).await;
-            } => {}
-            _ = tokio::time::sleep(timeout) => {}
-        };
+        let mut frame = vec![self.config.warmup.0.clone()];
+        frame.push(encode_frame(&self.config, bits));
+        let track = AudioTrack::new(self.config.stream_config.clone(), frame.concat().into());
+        self.stream.write_timeout(track, timeout).await;
     }
 }
 
-fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<AudioSamples<f32>> {
-    let mut frames = vec![];
-    for chunk in bits.chunks(PAYLOAD_BITS_LEN) {
-        let payload = chunk.encode(&config.symbols);
-        let length = chunk.len().encode(&config.symbols)[..LENGTH_BITS_LEN].to_owned();
+fn encode_frame(config: &AtherStreamConfig, bits: &BitSlice) -> AudioSamples<f32> {
+    assert!(bits.len() <= PAYLOAD_BITS_LEN);
 
-        frames.push(
-            [
-                config.preamble.0.clone(),
-                length.into_iter().collect(),
-                payload.into_iter().collect(),
-            ]
-            .concat()
-            .into(),
-        );
-    }
-    if bits.len() % PAYLOAD_BITS_LEN == 0 {
-        let payload: Vec<Symbol> = vec![];
-        let length = 0usize.encode(&config.symbols)[..LENGTH_BITS_LEN].to_owned();
+    let length = bits.len().encode(&config.symbols)[..LENGTH_BITS_LEN].to_owned();
+    let payload = bits.encode(&config.symbols);
 
-        frames.push(
-            [
-                config.preamble.0.clone(),
-                length.into_iter().collect(),
-                payload.into_iter().collect(),
-            ]
-            .concat()
-            .into(),
-        );
-    }
-
-    frames
+    [
+        config.preamble.0.clone(),
+        length.into_iter().collect(),
+        payload.into_iter().collect(),
+    ]
+    .concat()
+    .into()
 }
 
 trait AtherSymbolEncoding {
@@ -173,7 +149,7 @@ impl AtherInputStream {
                 while let Some(cmd) = reciever.recv().await {
                     match cmd {
                         AtherInputTaskCmd::Running => {
-                            match decode_packet(&config, &mut stream, &mut buf).await {
+                            match decode_frame(&config, &mut stream, &mut buf).await {
                                 Some(bits) => {
                                     let mut guard = task.lock().unwrap();
                                     match guard.take() {
@@ -369,28 +345,6 @@ async fn decode_frame(
     }
 
     Some(payload)
-}
-
-async fn decode_packet(
-    config: &AtherStreamConfig,
-    stream: &mut AudioInputStream<f32>,
-    buf: &mut Vec<f32>,
-) -> Option<BitVec> {
-    let mut bits = bitvec![];
-    loop {
-        match decode_frame(config, stream, buf).await {
-            Some(frame) => {
-                let len = frame.len();
-                bits.extend(frame);
-                eprintln!("Recieved {}, New {}", bits.len(), len);
-                if len != PAYLOAD_BITS_LEN {
-                    break;
-                }
-            }
-            None => return None,
-        }
-    }
-    Some(bits)
 }
 
 impl ContinuousStream for AtherInputStream {
