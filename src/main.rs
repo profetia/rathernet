@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
     let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
     let read_stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
 
-    let config = AtherStreamConfig::new(10000, 1000, config);
+    let config = AtherStreamConfig::new(10000, 2000, config);
     let write_ather = AtherOutputStream::new(config.clone(), write_stream);
     let mut read_ather = AtherInputStream::new(config.clone(), read_stream);
 
@@ -52,12 +52,21 @@ async fn main() -> Result<()> {
 
     tokio::join!(
         async {
-            time::sleep(Duration::from_secs(5)).await;
-            write_ather.write(&bits).await;
+            for chunk in bits.chunks(127) {
+                write_ather.write(chunk).await;
+            }
             eprintln!("Transmitted: {}", bits.len());
         },
         async {
-            let buf = read_ather.next().await.unwrap();
+            let mut buf = bitvec![];
+            while let Some(frame) = read_ather.next().await {
+                let len = frame.len();
+                buf.extend(frame);
+                eprintln!("Received: {}, new: {}", buf.len(), len);
+                if len != 127 {
+                    break;
+                }
+            }
             eprintln!("Received: {}", buf.len());
             fs::write(
                 "output.txt",
