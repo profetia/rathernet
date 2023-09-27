@@ -218,7 +218,6 @@ where
 
 pub struct AudioInputStream<S: Sample> {
     stream: AsioInputStream,
-    config: SupportedStreamConfig,
     task: AudioInputTask,
     reciever: Receiver<AudioSamples<S>>,
 }
@@ -260,7 +259,7 @@ where
 
         Ok(AudioInputStream {
             stream,
-            config,
+
             task,
             reciever,
         })
@@ -318,10 +317,6 @@ where
         + FromSample<f32>
         + 'static,
 {
-    pub fn config(&self) -> &SupportedStreamConfig {
-        &self.config
-    }
-
     pub async fn read(&mut self) -> AudioSamples<S> {
         let mut result = vec![];
         while let Some(data) = self.next().await {
