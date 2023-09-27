@@ -26,7 +26,7 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_stream::{Stream, StreamExt};
 
 const WARMUP_SYMBOL_LEN: usize = 8;
-const PREAMBLE_SYMBOL_LEN: usize = 32; // 8 | 16 | 32 | 64
+const PREAMBLE_SYMBOL_LEN: usize = 96; // 8 | 16 | 32 | 64
 const PREAMBLE_CORR_THRESHOLD: f32 = 0.15;
 
 const LENGTH_BITS_LEN: usize = 7; // 5 | 6

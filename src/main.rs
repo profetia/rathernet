@@ -33,9 +33,10 @@ async fn main() -> Result<()> {
     );
 
     let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
-    let read_stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
+    let read_stream: AudioInputStream<f32> =
+        AudioInputStream::try_from_device_config(&device, config.clone())?;
 
-    let config = AtherStreamConfig::new(10000, 2000, config);
+    let config = AtherStreamConfig::new(10000, 5000, config);
     let write_ather = AtherOutputStream::new(config.clone(), write_stream);
     let mut read_ather = AtherInputStream::new(config.clone(), read_stream);
 
@@ -58,6 +59,9 @@ async fn main() -> Result<()> {
             eprintln!("Transmitted: {}", bits.len());
         },
         async {
+            // let samples = read_stream.read_timeout(Duration::from_secs(5)).await;
+            // fs::write("samples.txt", format!("{:?}", samples)).unwrap();
+
             let mut buf = bitvec![];
             while let Some(frame) = read_ather.next().await {
                 let len = frame.len();
