@@ -1,8 +1,8 @@
-//! Translated from https://gist.github.com/YairMZ/b88e594047c7b5366053cd7fb375a94f.
+//! Translated from <https://gist.github.com/YairMZ/b88e594047c7b5366053cd7fb375a94f>.
 //! The corresponding blog can be found in:
-//! - https://medium.com/nerd-for-tech/into-to-convolutional-coding-part-i-d63decab56a0
-//! - https://medium.com/nerd-for-tech/intro-to-convolutional-coding-part-ii-d289c109ff7a
-//! - https://medium.com/nerd-for-tech/intro-to-convolutional-coding-part-iii-5529fdeebdb6
+//! - <https://medium.com/nerd-for-tech/into-to-convolutional-coding-part-i-d63decab56a0>
+//! - <https://medium.com/nerd-for-tech/intro-to-convolutional-coding-part-ii-d289c109ff7a>
+//! - <https://medium.com/nerd-for-tech/intro-to-convolutional-coding-part-iii-5529fdeebdb6>
 
 use bitvec::prelude::*;
 use std::mem;

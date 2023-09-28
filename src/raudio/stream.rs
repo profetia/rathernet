@@ -259,7 +259,6 @@ where
 
         Ok(AudioInputStream {
             stream,
-
             task,
             reciever,
         })
