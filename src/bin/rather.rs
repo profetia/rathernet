@@ -7,7 +7,12 @@ use rathernet::{
     raudio::{AsioDevice, AudioInputStream, AudioOutputStream, AudioSamples, AudioTrack},
 };
 use rodio::DeviceTrait;
-use std::{f32::consts::PI, fs, path::PathBuf};
+use std::{
+    f32::consts::PI,
+    fs::{self, File},
+    io,
+    path::PathBuf,
+};
 use thiserror::Error;
 use tokio_stream::StreamExt;
 
@@ -56,17 +61,17 @@ enum Commands {
         #[clap(short, long, default_value = "false")]
         chars: bool,
     },
-    /// Write audio from a file to an output device, while reading audio from an input device.
+    /// Write bits from a file to an output device, while reading bits from an input device.
     #[command(arg_required_else_help = true)]
     Duplex {
-        /// The path to the audio file to write.
+        /// The path to the file to write.
         #[arg(required = true)]
         source: PathBuf,
-        /// The name of the device to read audio from and write audio to.
+        /// The name of the device to read bits from and write bits to.
         #[clap(short, long)]
         device: Option<String>,
-        /// The path to the file to write the audio to.
-        /// If not specified, the audio will be written to the default output device.
+        /// The path to the file to store the received bits in.
+        /// If not specified, the bits will be written to the default output device.
         #[clap(short, long)]
         file: Option<PathBuf>,
         /// Interprets bits as chars of 1s and 0s.
@@ -235,9 +240,9 @@ async fn main() -> Result<()> {
             let write_ather =
                 AtherOutputStream::new(AtherStreamConfig::new(10000, 1000, config), write_stream);
 
-            let source = fs::read_to_string(source)?;
             let mut bits = bitvec![];
             if chars {
+                let source = fs::read_to_string(source)?;
                 for ch in source.chars() {
                     match ch {
                         '0' => bits.push(false),
@@ -246,13 +251,12 @@ async fn main() -> Result<()> {
                     }
                 }
             } else {
-                for byte in source.bytes() {
-                    bits.extend(byte.view_bits::<Lsb0>());
-                }
+                let mut file = File::open(source)?;
+                io::copy(&mut file, &mut bits)?;
             }
 
             let (_, bits) = tokio::join!(write_ather.write(&bits), read_ather.next());
-            let buf = bits.unwrap();
+            let mut buf = bits.unwrap();
 
             if let Some(file) = file {
                 if chars {
@@ -264,19 +268,8 @@ async fn main() -> Result<()> {
                     )
                     .unwrap();
                 } else {
-                    fs::write(
-                        file,
-                        buf.chunks(8)
-                            .map(|chunk| {
-                                let mut byte = 0u8;
-                                for (index, bit) in chunk.iter().enumerate() {
-                                    byte |= (*bit as u8) << index;
-                                }
-                                byte
-                            })
-                            .collect::<Vec<_>>(),
-                    )
-                    .unwrap();
+                    let file = File::create(file)?;
+                    io::copy(&mut buf, &mut &file)?;
                 }
             } else {
                 eprintln!("No output file specified. Write the bits to stdout.");
