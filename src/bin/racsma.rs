@@ -1,7 +1,7 @@
 use anyhow::Result;
 use bitvec::prelude::*;
 use clap::{Parser, Subcommand};
-use rathernet::rather::ather::PAYLOAD_BITS_LEN;
+use rathernet::rather::builtin::PAYLOAD_BITS_LEN;
 use rathernet::rather::{AtherInputStream, AtherOutputStream, AtherStreamConfig};
 use rathernet::raudio::{AsioDevice, AudioInputStream, AudioOutputStream};
 use rodio::DeviceTrait;
