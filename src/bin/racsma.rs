@@ -69,13 +69,10 @@ async fn main() -> Result<()> {
             );
 
             let read_stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
-            let mut read_ather = AtherInputStream::new(
-                AtherStreamConfig::new(10000, 5000, config.clone()),
-                read_stream,
-            );
             let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
-            let write_ather =
-                AtherOutputStream::new(AtherStreamConfig::new(10000, 5000, config), write_stream);
+            let config = AtherStreamConfig::new(10000, 10000, config.clone());
+            let mut read_ather = AtherInputStream::new(config.clone(), read_stream);
+            let write_ather = AtherOutputStream::new(config.clone(), write_stream);
 
             let mut bits = bitvec![];
             if chars {
