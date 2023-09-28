@@ -1,7 +1,7 @@
 mod frame;
 mod stream;
 
-pub mod ather;
+pub mod builtin;
 pub mod conv;
 pub mod encode;
 pub mod signal;
