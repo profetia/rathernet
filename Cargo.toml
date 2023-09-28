@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.75"
+bitflags = "2.4.0"
 bitvec = "1.0.1"
 clap = { version = "4.4.3", features = ["derive"] }
 cpal = { version = "0.15.2", features = ["asio"] }
