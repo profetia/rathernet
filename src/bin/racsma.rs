@@ -1,6 +1,6 @@
 use anyhow::Result;
 use bitvec::prelude::*;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use rathernet::rather::builtin::PAYLOAD_BITS_LEN;
 use rathernet::rather::{AtherInputStream, AtherOutputStream, AtherStreamConfig};
 use rathernet::raudio::{AsioDevice, AudioInputStream, AudioOutputStream};
@@ -37,7 +37,17 @@ enum Commands {
         /// Interprets the file as a text file consisting of 1s and 0s.
         #[clap(short, long, default_value = "false")]
         chars: bool,
+        /// The type of calibration to perform.
+        #[clap(short, long, default_value = "duplex")]
+        r#type: CalibrateType,
     },
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug)]
+enum CalibrateType {
+    Read,
+    Write,
+    Duplex,
 }
 
 #[derive(Error, Debug)]
@@ -55,6 +65,7 @@ async fn main() -> Result<()> {
             file,
             device,
             chars,
+            r#type,
         } => {
             let device = match device {
                 Some(name) => AsioDevice::try_from_name(&name)?,
@@ -89,47 +100,78 @@ async fn main() -> Result<()> {
                 io::copy(&mut file, &mut bits)?;
             }
 
-            let (_, mut buf) = tokio::join!(
-                async {
-                    for chunk in bits.chunks(PAYLOAD_BITS_LEN) {
-                        write_ather.write(chunk).await;
-                    }
-                },
-                async {
-                    let mut buf = bitvec![];
-                    while let Some(frame) = read_ather.next().await {
-                        let len = frame.len();
-                        buf.extend(frame);
-                        eprintln!("Received: {}, new: {}", buf.len(), len);
-                        if buf.len() >= bits.len() {
-                            break;
-                        }
-                    }
-                    buf
+            let write_future = async {
+                for chunk in bits.chunks(PAYLOAD_BITS_LEN) {
+                    write_ather.write(chunk).await;
                 }
-            );
+            };
+            let read_future = async {
+                let mut buf = bitvec![];
+                while let Some(frame) = read_ather.next().await {
+                    let len = frame.len();
+                    buf.extend(frame);
+                    eprintln!("Received: {}, new: {}", buf.len(), len);
+                    if buf.len() >= bits.len() {
+                        break;
+                    }
+                }
+                buf
+            };
 
-            if let Some(file) = file {
-                if chars {
-                    fs::write(
-                        file,
-                        buf.into_iter()
-                            .map(|bit| if bit { '1' } else { '0' })
-                            .collect::<String>(),
-                    )
-                    .unwrap();
-                } else {
-                    let file = File::create(file)?;
-                    io::copy(&mut buf, &mut &file)?;
+            match r#type {
+                CalibrateType::Read => {
+                    let mut buf = read_future.await;
+                    if let Some(file) = file {
+                        if chars {
+                            fs::write(
+                                file,
+                                buf.into_iter()
+                                    .map(|bit| if bit { '1' } else { '0' })
+                                    .collect::<String>(),
+                            )
+                            .unwrap();
+                        } else {
+                            let file = File::create(file)?;
+                            io::copy(&mut buf, &mut &file)?;
+                        }
+                    } else {
+                        eprintln!("No output file specified. Write the bits to stdout.");
+                        println!(
+                            "{}",
+                            buf.into_iter()
+                                .map(|bit| if bit { '1' } else { '0' })
+                                .collect::<String>()
+                        );
+                    }
                 }
-            } else {
-                eprintln!("No output file specified. Write the bits to stdout.");
-                println!(
-                    "{}",
-                    buf.into_iter()
-                        .map(|bit| if bit { '1' } else { '0' })
-                        .collect::<String>()
-                );
+                CalibrateType::Write => {
+                    write_future.await;
+                }
+                CalibrateType::Duplex => {
+                    let (_, mut buf) = tokio::join!(write_future, read_future);
+                    if let Some(file) = file {
+                        if chars {
+                            fs::write(
+                                file,
+                                buf.into_iter()
+                                    .map(|bit| if bit { '1' } else { '0' })
+                                    .collect::<String>(),
+                            )
+                            .unwrap();
+                        } else {
+                            let file = File::create(file)?;
+                            io::copy(&mut buf, &mut &file)?;
+                        }
+                    } else {
+                        eprintln!("No output file specified. Write the bits to stdout.");
+                        println!(
+                            "{}",
+                            buf.into_iter()
+                                .map(|bit| if bit { '1' } else { '0' })
+                                .collect::<String>()
+                        );
+                    }
+                }
             }
         }
     }
