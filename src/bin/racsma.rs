@@ -1,6 +1,7 @@
 use anyhow::Result;
 use bitvec::prelude::*;
 use clap::{Parser, Subcommand};
+use rathernet::rather::ather::PAYLOAD_BITS_LEN;
 use rathernet::rather::{AtherInputStream, AtherOutputStream, AtherStreamConfig};
 use rathernet::raudio::{AsioDevice, AudioInputStream, AudioOutputStream};
 use rodio::DeviceTrait;
@@ -93,7 +94,7 @@ async fn main() -> Result<()> {
 
             let (_, mut buf) = tokio::join!(
                 async {
-                    for chunk in bits.chunks(127) {
+                    for chunk in bits.chunks(PAYLOAD_BITS_LEN) {
                         write_ather.write(chunk).await;
                     }
                 },

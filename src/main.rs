@@ -2,6 +2,7 @@ use anyhow::Result;
 use bitvec::prelude::*;
 use cpal::FromSample;
 use cpal::{traits::DeviceTrait, SupportedStreamConfig};
+use rathernet::rather::ather::PAYLOAD_BITS_LEN;
 // use rathernet::rather::signal::BandPass;
 use rathernet::rather::{self, AtherInputStream};
 use rathernet::raudio::AudioTrack;
@@ -53,7 +54,7 @@ async fn main() -> Result<()> {
 
     tokio::join!(
         async {
-            for chunk in bits.chunks(127) {
+            for chunk in bits.chunks(PAYLOAD_BITS_LEN) {
                 write_ather.write(chunk).await;
             }
             eprintln!("Transmitted: {}", bits.len());
@@ -67,7 +68,7 @@ async fn main() -> Result<()> {
                 let len = frame.len();
                 buf.extend(frame);
                 eprintln!("Received: {}, new: {}", buf.len(), len);
-                if len != 127 {
+                if len != PAYLOAD_BITS_LEN {
                     break;
                 }
             }
