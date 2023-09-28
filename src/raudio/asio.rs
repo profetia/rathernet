@@ -66,6 +66,10 @@ impl AsioOutputStream {
     }
 }
 
+unsafe impl Send for AsioOutputStream {}
+
+unsafe impl Sync for AsioOutputStream {}
+
 pub struct AsioInputStream(pub Stream);
 
 impl AsioInputStream {
@@ -75,3 +79,5 @@ impl AsioInputStream {
 }
 
 unsafe impl Send for AsioInputStream {}
+
+unsafe impl Sync for AsioInputStream {}
