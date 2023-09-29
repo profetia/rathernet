@@ -35,9 +35,9 @@ enum Commands {
         #[clap(short, long)]
         device: Option<String>,
     },
-    /// Send bits from a file through the ather.
+    /// Write bits from a file through the ather.
     #[command(arg_required_else_help = true)]
-    Send {
+    Write {
         /// The file to send.
         #[arg(required = true)]
         file: PathBuf,
@@ -48,9 +48,8 @@ enum Commands {
         #[clap(short, long, default_value = "false")]
         chars: bool,
     },
-    /// Receive bits from the ather and write them to a file.
-    #[command(arg_required_else_help = true)]
-    Receive {
+    /// Read bits from the ather and write them to a file.
+    Read {
         /// The file to write the received bits to.
         #[clap(short, long)]
         file: Option<PathBuf>,
@@ -121,7 +120,7 @@ async fn main() -> Result<()> {
     let cli = RatherCli::parse();
     match cli.subcmd {
         Commands::Calibrate { elapse, device } => calibrate(elapse, device).await?,
-        Commands::Send {
+        Commands::Write {
             file,
             device,
             chars,
@@ -158,7 +157,7 @@ async fn main() -> Result<()> {
 
             ather.write(&bits).await;
         }
-        Commands::Receive {
+        Commands::Read {
             file,
             device,
             chars,
