@@ -10,8 +10,9 @@ use thiserror::Error;
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct FrameType: usize {
-        const ACK = 0b0000_0001;
-        const EOP = 0b0000_0010;
+        const DATA = 0;
+        const ACK = 1;
+        const META = 2;
     }
 }
 
@@ -42,6 +43,16 @@ impl Frame {
             seq,
             r#type: FrameType::ACK,
             payload: bitvec![],
+        }
+    }
+
+    pub fn new_meta(dest: usize, src: usize, length: usize) -> Self {
+        Self {
+            dest,
+            src,
+            seq: 0,
+            r#type: FrameType::META,
+            payload: length.view_bits::<Lsb0>()[..SEQ_BITS_LEN].to_owned(),
         }
     }
 }
