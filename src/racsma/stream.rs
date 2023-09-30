@@ -4,6 +4,7 @@ use super::{
 };
 use crate::rather::{AtherInputStream, AtherOutputStream};
 use bitvec::prelude::*;
+use std::collections::BTreeMap;
 use tokio::{
     sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
     time,
@@ -42,7 +43,9 @@ impl AcsmaIoStream {
                 } else if let Ok(Some(bits)) =
                     time::timeout(FRAME_DETECT_TIMEOUT, istream.next()).await
                 {
-                    rx_sender.send(bits).unwrap();
+                    if rx_sender.send(bits).is_err() {
+                        break;
+                    }
                 } else {
                     println!("Timeout");
                 }
@@ -87,8 +90,7 @@ impl AcsmaIoStream {
     }
 
     pub async fn read(&mut self, src: usize, buf: &mut BitSlice) {
-        let mut bucket: Vec<(usize, BitVec)> = vec![];
-        let mut len = 0usize;
+        let (mut bucket, mut len) = (BTreeMap::new(), 0usize);
         loop {
             if let Some(bits) = self.reciever.recv().await {
                 println!("Got bits len {}", bits.len());
@@ -96,11 +98,11 @@ impl AcsmaIoStream {
                     let header = frame.header();
                     if header.src == src && header.dest == self.config.src {
                         println!("Got data at index {}", header.seq);
-                        if !bucket.iter().any(|item| item.0 == header.seq) {
+                        bucket.entry(header.seq).or_insert_with(|| {
                             let payload = frame.payload().unwrap();
                             len += payload.len();
-                            bucket.push((header.seq, payload.to_owned()));
-                        }
+                            payload.to_owned()
+                        });
 
                         let ack = AckFrame::new(header.src, self.config.src, header.seq);
                         self.sender.send(ack.into()).unwrap();
@@ -114,14 +116,9 @@ impl AcsmaIoStream {
             }
         }
 
-        bucket.sort_by(|a, b| a.0.cmp(&b.0));
-        let bucket = bucket
-            .into_iter()
-            .map(|item| item.1)
-            .fold(bitvec![], |mut acc, mut item| {
-                acc.append(&mut item);
-                acc
-            });
-        buf.copy_from_bitslice(&bucket[..]);
+        buf.copy_from_bitslice(&bucket.iter().fold(bitvec![], |mut acc, (_, bits)| {
+            acc.extend(bits);
+            acc
+        }));
     }
 }
