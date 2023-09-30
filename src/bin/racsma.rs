@@ -67,6 +67,9 @@ enum Commands {
         /// Writes the received bits as a text file consisting of 1s and 0s.
         #[clap(short, long, default_value = "false")]
         chars: bool,
+        /// Number of bits to read.
+        #[clap(short, long, default_value = "0")]
+        num_bits: usize,
     },
 }
 
@@ -248,6 +251,7 @@ async fn main() -> Result<()> {
             file,
             device,
             chars,
+            num_bits,
         } => {
             let device = match device {
                 Some(name) => AsioDevice::try_from_name(&name)?,
@@ -270,7 +274,9 @@ async fn main() -> Result<()> {
             let config = AcsmaIoConfig::new(0);
             let mut acsma = AcsmaIoStream::new(config, read_ather, write_ather);
 
-            let mut buf = acsma.read(0usize).await;
+            let mut buf = bitvec![0; num_bits];
+            acsma.read(0usize, &mut buf).await;
+
             if let Some(file) = file {
                 if chars {
                     fs::write(
