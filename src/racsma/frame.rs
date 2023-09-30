@@ -3,67 +3,96 @@ use super::builtin::{
 };
 use crate::rather::encode::{DecodeToBytes, DecodeToInt};
 use anyhow::Error;
-use bitflags::bitflags;
 use bitvec::prelude::*;
 use thiserror::Error;
 
-bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct FrameType: usize {
-        const DATA = 0;
-        const ACK = 1;
-        const META = 2;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FrameType {
+    Data = 0b0000_0000,
+    Ack = 0b0000_0001,
+}
+
+impl FrameType {
+    pub fn bits(self) -> usize {
+        self as usize
     }
 }
 
-#[derive(Debug)]
-pub struct Frame {
+#[derive(Debug, Clone)]
+pub struct FrameHeader {
     pub dest: usize,
     pub src: usize,
     pub seq: usize,
-    pub r#type: FrameType,
-    pub payload: BitVec,
+    pub r#type: usize,
 }
 
-impl Frame {
-    pub fn new_data(dest: usize, src: usize, seq: usize, payload: BitVec) -> Self {
+impl From<FrameHeader> for BitVec {
+    fn from(value: FrameHeader) -> Self {
+        let mut header = bitvec![];
+        header.extend(&value.dest.view_bits::<Lsb0>()[..ADDRESS_BITS_LEN]);
+        header.extend(&value.src.view_bits::<Lsb0>()[..ADDRESS_BITS_LEN]);
+        header.extend(&value.seq.view_bits::<Lsb0>()[..SEQ_BITS_LEN]);
+        header.extend(&value.r#type.view_bits::<Lsb0>()[..TYPE_BITS_LEN]);
+
+        header
+    }
+}
+
+impl From<&BitSlice> for FrameHeader {
+    fn from(value: &BitSlice) -> Self {
         Self {
-            dest,
-            src,
-            seq,
-            r#type: FrameType::from_bits_truncate(0b0000_0000),
+            dest: DecodeToInt::decode(&value[0..ADDRESS_BITS_LEN]),
+            src: DecodeToInt::decode(&value[ADDRESS_BITS_LEN..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN]),
+            seq: DecodeToInt::decode(
+                &value[ADDRESS_BITS_LEN + ADDRESS_BITS_LEN
+                    ..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN],
+            ),
+            r#type: DecodeToInt::decode(
+                &value[ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN
+                    ..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
+            ),
+        }
+    }
+}
+
+pub trait Frame: From<Self> + TryFrom<BitVec> {
+    fn header(&self) -> &FrameHeader;
+    fn payload(&self) -> Option<&BitSlice>;
+}
+
+#[derive(Debug, Clone)]
+pub struct DataFrame {
+    header: FrameHeader,
+    payload: BitVec,
+}
+
+impl DataFrame {
+    pub fn new(dest: usize, src: usize, seq: usize, payload: BitVec) -> Self {
+        Self {
+            header: FrameHeader {
+                dest,
+                src,
+                seq,
+                r#type: FrameType::Data.bits(),
+            },
             payload,
         }
     }
+}
 
-    pub fn new_ack(dest: usize, src: usize, seq: usize) -> Self {
-        Self {
-            dest,
-            src,
-            seq,
-            r#type: FrameType::ACK,
-            payload: bitvec![],
-        }
+impl Frame for DataFrame {
+    fn header(&self) -> &FrameHeader {
+        &self.header
     }
 
-    pub fn new_meta(dest: usize, src: usize, length: usize) -> Self {
-        Self {
-            dest,
-            src,
-            seq: 0,
-            r#type: FrameType::META,
-            payload: length.view_bits::<Lsb0>()[..SEQ_BITS_LEN].to_owned(),
-        }
+    fn payload(&self) -> Option<&BitSlice> {
+        Some(&self.payload)
     }
 }
 
-impl From<Frame> for BitVec {
-    fn from(value: Frame) -> Self {
-        let mut frame = bitvec![];
-        frame.extend(&value.dest.view_bits::<Lsb0>()[..ADDRESS_BITS_LEN]);
-        frame.extend(&value.src.view_bits::<Lsb0>()[..ADDRESS_BITS_LEN]);
-        frame.extend(&value.seq.view_bits::<Lsb0>()[..SEQ_BITS_LEN]);
-        frame.extend(&value.r#type.bits().view_bits::<Lsb0>()[..TYPE_BITS_LEN]);
+impl From<DataFrame> for BitVec {
+    fn from(value: DataFrame) -> Self {
+        let mut frame = BitVec::from(value.header);
         frame.extend(value.payload);
 
         let bytes = DecodeToBytes::decode(&frame);
@@ -74,45 +103,118 @@ impl From<Frame> for BitVec {
     }
 }
 
-impl TryFrom<BitVec> for Frame {
+fn verify(bits: &BitSlice) -> Result<(), Error> {
+    if bits.len()
+        < ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN + PARITY_BITS_LEN
+    {
+        return Err(FrameDecodeError::FrameIsTooShort(
+            bits.len(),
+            ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN + PARITY_BITS_LEN,
+        )
+        .into());
+    }
+
+    let len = bits.len();
+    let parity = DecodeToInt::<usize>::decode(&bits[len - PARITY_BITS_LEN..]);
+    let bytes = DecodeToBytes::decode(&bits[..len - PARITY_BITS_LEN]);
+    if PARITY_ALGORITHM.checksum(&bytes) as usize != parity {
+        return Err(FrameDecodeError::ParityCheckFailed(
+            parity,
+            PARITY_ALGORITHM.checksum(&bytes) as usize,
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+impl TryFrom<BitVec> for DataFrame {
     type Error = Error;
 
     fn try_from(value: BitVec) -> Result<Self, Self::Error> {
-        if value.len()
-            < ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN + PARITY_BITS_LEN
-        {
-            return Err(FrameError::FrameIsTooShort.into());
+        verify(&value)?;
+        let header = FrameHeader::from(
+            &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
+        );
+        if header.r#type != FrameType::Data.bits() {
+            return Err(FrameDecodeError::UnexpectedFrameType(
+                header.r#type,
+                FrameType::Data.bits(),
+            )
+            .into());
         }
+        let payload = value[ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN
+            ..value.len() - PARITY_BITS_LEN]
+            .to_owned();
+        Ok(Self { header, payload })
+    }
+}
 
-        let len = value.len();
-        let parity = DecodeToInt::<usize>::decode(&value[len - PARITY_BITS_LEN..]);
-        let bytes = DecodeToBytes::decode(&value[..len - PARITY_BITS_LEN]);
-        if PARITY_ALGORITHM.checksum(&bytes) as usize != parity {
-            return Err(FrameError::ParityCheckFailed.into());
+#[derive(Debug, Clone)]
+pub struct AckFrame {
+    header: FrameHeader,
+}
+
+impl AckFrame {
+    pub fn new(dest: usize, src: usize, seq: usize) -> Self {
+        Self {
+            header: FrameHeader {
+                dest,
+                src,
+                seq,
+                r#type: FrameType::Ack.bits(),
+            },
         }
+    }
+}
 
-        Ok(Self {
-            dest: DecodeToInt::decode(&value[0..ADDRESS_BITS_LEN]),
-            src: DecodeToInt::decode(&value[ADDRESS_BITS_LEN..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN]),
-            seq: DecodeToInt::decode(
-                &value[ADDRESS_BITS_LEN + ADDRESS_BITS_LEN
-                    ..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN],
-            ),
-            r#type: FrameType::from_bits_truncate(DecodeToInt::<usize>::decode(
-                &value[ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN
-                    ..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
-            )),
-            payload: value[ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN
-                ..len - PARITY_BITS_LEN]
-                .to_owned(),
-        })
+impl Frame for AckFrame {
+    fn header(&self) -> &FrameHeader {
+        &self.header
+    }
+
+    fn payload(&self) -> Option<&BitSlice> {
+        None
+    }
+}
+
+impl From<AckFrame> for BitVec {
+    fn from(value: AckFrame) -> Self {
+        let mut frame = BitVec::from(value.header);
+
+        let bytes = DecodeToBytes::decode(&frame);
+        let parity = PARITY_ALGORITHM.checksum(&bytes) as usize;
+        frame.extend(&parity.view_bits::<Lsb0>()[..PARITY_BITS_LEN]);
+
+        frame
+    }
+}
+
+impl TryFrom<BitVec> for AckFrame {
+    type Error = Error;
+
+    fn try_from(value: BitVec) -> Result<Self, Self::Error> {
+        verify(&value)?;
+        let header = FrameHeader::from(
+            &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
+        );
+        if header.r#type != FrameType::Ack.bits() {
+            return Err(FrameDecodeError::UnexpectedFrameType(
+                header.r#type,
+                FrameType::Ack.bits(),
+            )
+            .into());
+        }
+        Ok(Self { header })
     }
 }
 
 #[derive(Debug, Error)]
-pub enum FrameError {
-    #[error("Frame is too short")]
-    FrameIsTooShort,
-    #[error("Parity check failed")]
-    ParityCheckFailed,
+pub enum FrameDecodeError {
+    #[error("Frame is too short (got {0}, expected {1})")]
+    FrameIsTooShort(usize, usize),
+    #[error("Parity check failed (got {0}, expected {1})")]
+    ParityCheckFailed(usize, usize),
+    #[error("Unexpected frame type (got {0}, expected {1})")]
+    UnexpectedFrameType(usize, usize),
 }
