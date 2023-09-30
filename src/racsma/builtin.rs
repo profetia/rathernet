@@ -33,3 +33,4 @@ pub const PAYLOAD_BITS_LEN: usize = ATHER_PAYLOAD_BITS_LEN
 pub const FRAME_DETECT_TIMEOUT: Duration = Duration::from_millis(1000);
 
 pub const ACK_RECIEVE_TIMEOUT: Duration = Duration::from_millis(1000);
+pub const ACK_WINDOW_SIZE: usize = 8;
