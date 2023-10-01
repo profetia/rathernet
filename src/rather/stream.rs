@@ -68,13 +68,13 @@ const META_RESERVED_BITS_LEN: usize = 2;
 const META_BITS_LEN: usize = META_FLAG_BITS_LEN + META_FLAG_BITS_LEN + META_RESERVED_BITS_LEN;
 
 const PARITY_ALGORITHM: Crc<u16> = Crc::<u16>::new(&CRC_16_IBM_SDLC);
-const PARITY_RATIO: f32 = 0.25;
+const PARITY_RATIO: f32 = 0.20;
 const PARITY_BYTE_LEN: usize = 2;
 const PARITY_BITS_LEN: usize = PARITY_BYTE_LEN * 8;
 
 const LENGTH_BYTE_LEN: usize = 2;
 const LENGTH_BITS_LEN: usize = LENGTH_BYTE_LEN * 8;
-const PAYLOAD_BYTE_LEN: usize = 8;
+const PAYLOAD_BYTE_LEN: usize = 24;
 const PAYLOAD_BITS_LEN: usize = PAYLOAD_BYTE_LEN * 8;
 
 const META_ENCODED_BITS_LEN: usize = (META_BITS_LEN + CONV_ORDER) * CONV_FACTOR;
@@ -83,13 +83,16 @@ const BODY_BITS_LEN: usize = LENGTH_BITS_LEN + PAYLOAD_BITS_LEN;
 #[allow(dead_code)]
 const PACKET_BITS_LEN: usize = HEADER_BITS_LEN + BODY_BITS_LEN;
 
+const OFDM_FREQUENCY_LEN: usize = 3;
+const OFDM_FREQUENCY_GAP: usize = 1000;
+
 #[derive(Debug, Clone)]
 pub struct AtherStreamConfig {
     pub frequency: u32,
     pub bit_rate: u32,
     pub warmup: Warmup,
     pub preamble: Preamble,
-    pub symbols: (Symbol, Symbol),
+    pub symbols: Vec<(Symbol, Symbol)>,
     pub stream_config: SupportedStreamConfig,
 }
 
@@ -97,13 +100,19 @@ impl AtherStreamConfig {
     pub fn new(frequency: u32, bit_rate: u32, stream_config: SupportedStreamConfig) -> Self {
         let duration = 1.0 / bit_rate as f32;
         let sample_rate = stream_config.sample_rate().0;
+        let symbols = (0..OFDM_FREQUENCY_LEN)
+            .map(|i| {
+                let frequency = frequency + i as u32 * OFDM_FREQUENCY_GAP as u32;
+                Symbol::new(frequency, sample_rate, duration)
+            })
+            .collect::<Vec<_>>();
 
         Self {
             frequency,
             bit_rate,
             warmup: Warmup::new(WARMUP_SYMBOL_LEN, sample_rate, duration),
             preamble: Preamble::new(PREAMBLE_SYMBOL_LEN, sample_rate, duration),
-            symbols: Symbol::new(frequency, sample_rate, duration),
+            symbols,
             stream_config,
         }
     }
@@ -190,13 +199,31 @@ fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<AudioSample
 
             let body = shard.encode();
 
-            let mut frame = vec![];
-            frame.extend(header.encode(&config.symbols));
-            frame.extend(body.encode(&config.symbols));
-
             let mut samples = vec![];
             samples.push(config.preamble.0.clone());
-            samples.extend(frame.into_iter().map(|symbol| symbol.0).collect::<Vec<_>>());
+            samples.extend(
+                header
+                    .encode(&config.symbols[0])
+                    .into_iter()
+                    .map(|symbol| symbol.0)
+                    .collect::<Vec<_>>(),
+            );
+
+            for chunk in body.chunks(OFDM_FREQUENCY_LEN) {
+                let mut sample = vec![0f32; config.symbols[0].0 .0.len()];
+                for i in 0..OFDM_FREQUENCY_LEN.min(chunk.len()) {
+                    let symbol = if chunk[i] {
+                        &config.symbols[i].1
+                    } else {
+                        &config.symbols[i].0
+                    };
+                    for j in 0..symbol.0.len() {
+                        sample[j] += symbol.0[j];
+                    }
+                }
+
+                samples.push(sample.into());
+            }
 
             samples.concat().into()
         })
@@ -225,6 +252,7 @@ impl AtherSymbolEncoding for usize {
 impl AtherSymbolEncoding for BitSlice {
     fn encode(&self, symbols: &(Symbol, Symbol)) -> Vec<Symbol> {
         let mut samples = vec![];
+
         for bit in self {
             if *bit {
                 samples.push(symbols.1.clone());
@@ -362,12 +390,19 @@ async fn decode_frame(
     buf: &mut Vec<f32>,
 ) -> Option<(BitVec, usize, Vec<u8>)> {
     let sample_rate = config.stream_config.sample_rate().0 as f32;
-    let band_pass = (
-        config.frequency as f32 - 1000.,
-        config.frequency as f32 + 1000.,
-    );
+    let band_passes = (0..OFDM_FREQUENCY_LEN)
+        .map(|i| {
+            (
+                config.frequency as f32 + i as f32 * OFDM_FREQUENCY_GAP as f32
+                    - OFDM_FREQUENCY_GAP as f32 / 2.,
+                config.frequency as f32
+                    + i as f32 * OFDM_FREQUENCY_GAP as f32
+                    + OFDM_FREQUENCY_GAP as f32 / 2.,
+            )
+        })
+        .collect::<Vec<_>>();
     let preamble_len = config.preamble.0.len();
-    let symbol_len = config.symbols.0 .0.len();
+    let symbol_len = config.symbols[0].0 .0.len();
     let conv = ConvCode::new(CONV_GENERATORS);
 
     // println!("Decode frame...");
@@ -394,8 +429,8 @@ async fn decode_frame(
     while header.len() < HEADER_BITS_LEN {
         if buf.len() >= symbol_len {
             let mut symbol = buf[..symbol_len].to_owned();
-            symbol.band_pass(sample_rate, band_pass);
-            let value = signal::dot_product(&config.symbols.1 .0, &symbol);
+            symbol.band_pass(sample_rate, band_passes[0]);
+            let value = signal::dot_product(&config.symbols[0].1 .0, &symbol);
             header.push(value > 0.);
             *buf = buf.split_off(symbol_len);
         } else {
@@ -409,11 +444,12 @@ async fn decode_frame(
     let mut body = bitvec![];
     while body.len() < BODY_BITS_LEN {
         if buf.len() >= symbol_len {
-            let mut symbol = buf[..symbol_len].to_owned();
-            symbol.band_pass(sample_rate, band_pass);
-            let value = signal::dot_product(&config.symbols.1 .0, &symbol);
-            body.push(value > 0.);
-
+            for i in 0..OFDM_FREQUENCY_LEN {
+                let mut symbol = buf[..symbol_len].to_owned();
+                symbol.band_pass(sample_rate, band_passes[i]);
+                let value = signal::dot_product(&config.symbols[i].1 .0, &symbol);
+                body.push(value > 0.);
+            }
             *buf = buf.split_off(symbol_len);
         } else {
             match stream.next().await {
@@ -431,7 +467,7 @@ async fn decode_frame(
     let parity = DecodeToInt::<usize>::decode(parity);
     // println!("Receive parity: {}", parity);
 
-    let body = DecodeToBytes::decode(&body);
+    let body = DecodeToBytes::decode(&body[..PAYLOAD_BITS_LEN + LENGTH_BITS_LEN]);
     // println!("Receive body: {:?}", body);
 
     Some((meta, parity, body))
