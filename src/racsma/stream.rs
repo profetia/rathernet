@@ -1,10 +1,15 @@
 use super::{
-    builtin::{ACK_RECIEVE_TIMEOUT, ACK_WINDOW_SIZE, FRAME_DETECT_TIMEOUT, PAYLOAD_BITS_LEN},
+    builtin::{
+        ACK_LINK_TIMEOUT, ACK_RECIEVE_TIMEOUT, ACK_WINDOW_SIZE, FRAME_DETECT_TIMEOUT,
+        PAYLOAD_BITS_LEN,
+    },
     frame::{AckFrame, DataFrame, Frame},
 };
 use crate::rather::{AtherInputStream, AtherOutputStream};
+use anyhow::Result;
 use bitvec::prelude::*;
 use std::collections::VecDeque;
+use thiserror::Error;
 use tokio::{
     sync::mpsc::{self, error::TryRecvError, UnboundedReceiver, UnboundedSender},
     task::{JoinError, JoinHandle},
@@ -67,7 +72,7 @@ impl AcsmaIoStream {
 }
 
 impl AcsmaIoStream {
-    pub async fn write(&mut self, dest: usize, bits: &BitSlice) {
+    pub async fn write(&mut self, dest: usize, bits: &BitSlice) -> Result<()> {
         let mut chunks = bits.chunks(PAYLOAD_BITS_LEN).enumerate();
         let mut window = VecDeque::with_capacity(ACK_WINDOW_SIZE);
         for (index, chunk) in chunks.by_ref() {
@@ -84,33 +89,44 @@ impl AcsmaIoStream {
         while !window.is_empty() {
             let front_index = window.front().unwrap().0;
             let back_index = window.back().unwrap().0;
-            loop {
-                let timeout_future = async {
-                    while let Some(bits) = self.reciever.recv().await {
-                        if let Ok(frame) = AckFrame::try_from(bits) {
-                            let header = frame.header();
-                            if header.dest == self.config.src {
-                                println!("Recieve ACK for index {}", header.seq);
-                                if front_index <= header.seq && header.seq <= back_index {
-                                    window.retain(|(index, _)| *index > header.seq);
-                                    println!("Move window to index {}", header.seq + 1);
-                                    break;
+
+            let transmit_future = async {
+                loop {
+                    let ack_future = async {
+                        while let Some(bits) = self.reciever.recv().await {
+                            if let Ok(frame) = AckFrame::try_from(bits) {
+                                let header = frame.header();
+                                if header.dest == self.config.src {
+                                    println!("Recieve ACK for index {}", header.seq);
+                                    if front_index <= header.seq && header.seq <= back_index {
+                                        window.retain(|(index, _)| *index > header.seq);
+                                        println!("Move window to index {}", header.seq + 1);
+                                        break;
+                                    }
                                 }
                             }
                         }
+                    };
+                    if time::timeout(ACK_RECIEVE_TIMEOUT, ack_future).await.is_ok() {
+                        break;
                     }
-                };
-                if time::timeout(ACK_RECIEVE_TIMEOUT, timeout_future)
-                    .await
-                    .is_ok()
-                {
-                    break;
+                    window.iter().for_each(|(index, bits)| {
+                        self.sender.send(bits.clone()).unwrap();
+                        println!("Send frame at index {}", index);
+                    });
                 }
-                window.iter().for_each(|(index, bits)| {
-                    self.sender.send(bits.clone()).unwrap();
-                    println!("Send frame at index {}", index);
-                });
+            };
+
+            if time::timeout(ACK_LINK_TIMEOUT, transmit_future)
+                .await
+                .is_err()
+            {
+                return Err(AcsmaIoError::LinkTimeout(
+                    ACK_LINK_TIMEOUT.as_secs().try_into().unwrap(),
+                )
+                .into());
             }
+
             for (index, chunk) in chunks.by_ref() {
                 let bits: BitVec =
                     DataFrame::new(dest, self.config.src, index, chunk.to_owned()).into();
@@ -122,9 +138,11 @@ impl AcsmaIoStream {
                 }
             }
         }
+
+        Ok(())
     }
 
-    pub async fn read(&mut self, src: usize, buf: &mut BitSlice) {
+    pub async fn read(&mut self, src: usize, buf: &mut BitSlice) -> Result<()> {
         let mut bucket = bitvec![];
         let mut window: VecDeque<(usize, Option<BitVec>)> =
             VecDeque::with_capacity(ACK_WINDOW_SIZE);
@@ -132,60 +150,76 @@ impl AcsmaIoStream {
             window.push_back((index, None));
         }
 
-        while let Some(bits) = self.reciever.recv().await {
-            println!("Got bits len {}", bits.len());
-            let front_index = window.front().unwrap().0;
-            let back_index = window.back().unwrap().0;
-            if let Ok(frame) = DataFrame::try_from(bits) {
-                let header = frame.header();
-                if header.src == src && header.dest == self.config.src {
-                    println!("Recieve DATA for index {}", header.seq);
-                    if header.seq < front_index {
-                        let ack = AckFrame::new(header.src, self.config.src, front_index - 1);
-                        self.sender.send(ack.into()).unwrap();
-                        println!("Send ACK at index {}", front_index - 1);
-                    } else if header.seq <= back_index {
-                        let item = window.get_mut(header.seq - front_index).unwrap();
-                        if item.1.is_none() {
-                            let index = item.0;
-                            let payload = frame.payload().unwrap().to_owned();
-                            *item = (index, Some(payload));
-                        }
+        loop {
+            let recieve_future = self.reciever.recv();
+            if let Ok(recieved) = time::timeout(ACK_LINK_TIMEOUT, recieve_future).await {
+                if let Some(bits) = recieved {
+                    println!("Got bits len {}", bits.len());
+                    let front_index = window.front().unwrap().0;
+                    let back_index = window.back().unwrap().0;
+                    if let Ok(frame) = DataFrame::try_from(bits) {
+                        let header = frame.header();
+                        if header.src == src && header.dest == self.config.src {
+                            println!("Recieve DATA for index {}", header.seq);
+                            if header.seq < front_index {
+                                let ack =
+                                    AckFrame::new(header.src, self.config.src, front_index - 1);
+                                self.sender.send(ack.into()).unwrap();
+                                println!("Send ACK at index {}", front_index - 1);
+                            } else if header.seq <= back_index {
+                                let item = window.get_mut(header.seq - front_index).unwrap();
+                                if item.1.is_none() {
+                                    let index = item.0;
+                                    let payload = frame.payload().unwrap().to_owned();
+                                    *item = (index, Some(payload));
+                                }
 
-                        if header.seq == front_index {
-                            window = window
-                                .into_iter()
-                                .skip_while(|(_, payload)| {
-                                    if let Some(bits) = payload {
-                                        bucket.extend(bits);
-                                        return true;
+                                if header.seq == front_index {
+                                    window = window
+                                        .into_iter()
+                                        .skip_while(|(_, payload)| {
+                                            if let Some(bits) = payload {
+                                                bucket.extend(bits);
+                                                return true;
+                                            }
+                                            false
+                                        })
+                                        .collect();
+                                    for index in back_index + 1..back_index + ACK_WINDOW_SIZE + 1 {
+                                        window.push_back((index, None));
                                     }
-                                    false
-                                })
-                                .collect();
-                            for index in back_index + 1..back_index + ACK_WINDOW_SIZE + 1 {
-                                window.push_back((index, None));
-                            }
-                            let front_index = window.front().unwrap().0;
-                            println!("Move window to index {}", front_index);
-                            let ack = AckFrame::new(header.src, self.config.src, front_index - 1);
-                            self.sender.send(ack.into()).unwrap();
-                            println!("Send ACK at index {}", front_index - 1);
+                                    let front_index = window.front().unwrap().0;
+                                    println!("Move window to index {}", front_index);
+                                    let ack =
+                                        AckFrame::new(header.src, self.config.src, front_index - 1);
+                                    self.sender.send(ack.into()).unwrap();
+                                    println!("Send ACK at index {}", front_index - 1);
 
-                            if bucket.len() >= buf.len() {
-                                break;
+                                    if bucket.len() >= buf.len() {
+                                        break;
+                                    }
+                                } else if front_index > 0 {
+                                    let ack =
+                                        AckFrame::new(header.src, self.config.src, front_index - 1);
+                                    self.sender.send(ack.into()).unwrap();
+                                    println!("Send ACK at index {}", front_index - 1);
+                                }
+                            } else if front_index > 0 {
+                                let ack =
+                                    AckFrame::new(header.src, self.config.src, front_index - 1);
+                                self.sender.send(ack.into()).unwrap();
+                                println!("Send ACK at index {}", front_index - 1);
                             }
-                        } else if front_index > 0 {
-                            let ack = AckFrame::new(header.src, self.config.src, front_index - 1);
-                            self.sender.send(ack.into()).unwrap();
-                            println!("Send ACK at index {}", front_index - 1);
                         }
-                    } else if front_index > 0 {
-                        let ack = AckFrame::new(header.src, self.config.src, front_index - 1);
-                        self.sender.send(ack.into()).unwrap();
-                        println!("Send ACK at index {}", front_index - 1);
                     }
+                } else {
+                    break;
                 }
+            } else {
+                return Err(AcsmaIoError::LinkTimeout(
+                    ACK_LINK_TIMEOUT.as_secs().try_into().unwrap(),
+                )
+                .into());
             }
         }
 
@@ -197,6 +231,8 @@ impl AcsmaIoStream {
         }
 
         buf.copy_from_bitslice(&bucket[..buf.len()]);
+
+        Ok(())
     }
 }
 
@@ -207,4 +243,10 @@ impl AcsmaIoStream {
         self.handle.await?;
         Ok(())
     }
+}
+
+#[derive(Debug, Error)]
+pub enum AcsmaIoError {
+    #[error("Link timeout after {0} seconds")]
+    LinkTimeout(usize),
 }
