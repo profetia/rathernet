@@ -6,7 +6,7 @@
 //! start of a frame. The length is used to indicate the length of the payload.
 
 pub const WARMUP_SYMBOL_LEN: usize = 0;
-pub const PREAMBLE_SYMBOL_LEN: usize = 224; // 8 | 16 | 32 | 64
+pub const PREAMBLE_SYMBOL_LEN: usize = 448; // 8 | 16 | 32 | 64
 pub const PREAMBLE_CORR_THRESHOLD: f32 = 0.15;
 
 pub const LENGTH_BITS_LEN: usize = 10; // 6 | 7 | 8 | 9 | 10
