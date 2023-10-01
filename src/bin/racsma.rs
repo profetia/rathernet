@@ -246,6 +246,7 @@ async fn main() -> Result<()> {
             }
 
             acsma.write(0usize, &bits).await;
+            acsma.close().await?;
         }
         Commands::Read {
             file,
@@ -276,6 +277,7 @@ async fn main() -> Result<()> {
 
             let mut buf = bitvec![0; num_bits];
             acsma.read(0usize, &mut buf).await;
+            acsma.close().await?;
 
             if let Some(file) = file {
                 if chars {

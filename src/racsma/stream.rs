@@ -6,7 +6,8 @@ use crate::rather::{AtherInputStream, AtherOutputStream};
 use bitvec::prelude::*;
 use std::collections::VecDeque;
 use tokio::{
-    sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
+    sync::mpsc::{self, error::TryRecvError, UnboundedReceiver, UnboundedSender},
+    task::{JoinError, JoinHandle},
     time,
 };
 use tokio_stream::StreamExt;
@@ -26,6 +27,7 @@ pub struct AcsmaIoStream {
     config: AcsmaIoConfig,
     sender: UnboundedSender<BitVec>,
     reciever: UnboundedReceiver<BitVec>,
+    handle: JoinHandle<()>,
 }
 
 impl AcsmaIoStream {
@@ -36,16 +38,19 @@ impl AcsmaIoStream {
     ) -> Self {
         let (tx_sender, mut tx_reciever) = mpsc::unbounded_channel::<BitVec>();
         let (rx_sender, rx_reciever) = mpsc::unbounded_channel::<BitVec>();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             loop {
-                if let Ok(bits) = tx_reciever.try_recv() {
+                let bits = tx_reciever.try_recv();
+                if let Ok(bits) = bits {
                     ostream.write(&bits).await;
+                } else if let Err(TryRecvError::Disconnected) = bits {
+                    break;
+                } else if rx_sender.is_closed() {
+                    break;
                 } else if let Ok(Some(bits)) =
                     time::timeout(FRAME_DETECT_TIMEOUT, istream.next()).await
                 {
-                    if rx_sender.send(bits).is_err() {
-                        break;
-                    }
+                    rx_sender.send(bits).unwrap();
                 } else {
                     println!("Timeout");
                 }
@@ -56,6 +61,7 @@ impl AcsmaIoStream {
             config,
             sender: tx_sender,
             reciever: rx_reciever,
+            handle,
         }
     }
 }
@@ -191,5 +197,14 @@ impl AcsmaIoStream {
         }
 
         buf.copy_from_bitslice(&bucket[..buf.len()]);
+    }
+}
+
+impl AcsmaIoStream {
+    pub async fn close(self) -> Result<(), JoinError> {
+        drop(self.sender);
+        drop(self.reciever);
+        self.handle.await?;
+        Ok(())
     }
 }
