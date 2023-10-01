@@ -111,7 +111,7 @@ async fn main() -> Result<()> {
 
             let read_stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
             let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
-            let config = AtherStreamConfig::new(10000, 24000, config.clone());
+            let config = AtherStreamConfig::new(10000, 15000, config.clone());
             let mut read_ather = AtherInputStream::new(config.clone(), read_stream);
             let write_ather = AtherOutputStream::new(config.clone(), write_stream);
 
@@ -223,7 +223,7 @@ async fn main() -> Result<()> {
 
             let read_stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
             let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
-            let config = AtherStreamConfig::new(10000, 24000, config.clone());
+            let config = AtherStreamConfig::new(10000, 15000, config.clone());
             let read_ather = AtherInputStream::new(config.clone(), read_stream);
             let write_ather = AtherOutputStream::new(config.clone(), write_stream);
 
@@ -246,7 +246,6 @@ async fn main() -> Result<()> {
             }
 
             acsma.write(0usize, &bits).await?;
-            acsma.close().await?;
         }
         Commands::Read {
             file,
@@ -268,7 +267,7 @@ async fn main() -> Result<()> {
 
             let read_stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
             let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
-            let config = AtherStreamConfig::new(10000, 24000, config.clone());
+            let config = AtherStreamConfig::new(10000, 15000, config.clone());
             let read_ather = AtherInputStream::new(config.clone(), read_stream);
             let write_ather = AtherOutputStream::new(config.clone(), write_stream);
 
@@ -277,7 +276,6 @@ async fn main() -> Result<()> {
 
             let mut buf = bitvec![0; num_bits];
             acsma.read(0usize, &mut buf).await?;
-            acsma.close().await?;
 
             if let Some(file) = file {
                 if chars {
