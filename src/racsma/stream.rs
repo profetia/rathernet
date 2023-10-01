@@ -45,12 +45,12 @@ impl AcsmaIoStream {
                     ostream.write(&bits).await;
                 } else if let Err(TryRecvError::Disconnected) = bits {
                     break;
-                } else if rx_sender.is_closed() {
-                    break;
                 } else if let Ok(Some(bits)) =
                     time::timeout(FRAME_DETECT_TIMEOUT, istream.next()).await
                 {
-                    rx_sender.send(bits).unwrap();
+                    if rx_sender.send(bits).is_err() {
+                        break;
+                    }
                 } else {
                     println!("Timeout");
                 }
@@ -175,12 +175,12 @@ impl AcsmaIoStream {
                             if bucket.len() >= buf.len() {
                                 break;
                             }
-                        } else {
+                        } else if front_index > 0 {
                             let ack = AckFrame::new(header.src, self.config.src, front_index - 1);
                             self.sender.send(ack.into()).unwrap();
                             println!("Send ACK at index {}", front_index - 1);
                         }
-                    } else {
+                    } else if front_index > 0 {
                         let ack = AckFrame::new(header.src, self.config.src, front_index - 1);
                         self.sender.send(ack.into()).unwrap();
                         println!("Send ACK at index {}", front_index - 1);
