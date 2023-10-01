@@ -245,7 +245,7 @@ async fn main() -> Result<()> {
                 io::copy(&mut file, &mut bits)?;
             }
 
-            acsma.write(0usize, &bits).await;
+            acsma.write(0usize, &bits).await?;
             acsma.close().await?;
         }
         Commands::Read {
@@ -276,7 +276,7 @@ async fn main() -> Result<()> {
             let mut acsma = AcsmaIoStream::new(config, read_ather, write_ather);
 
             let mut buf = bitvec![0; num_bits];
-            acsma.read(0usize, &mut buf).await;
+            acsma.read(0usize, &mut buf).await?;
             acsma.close().await?;
 
             if let Some(file) = file {
@@ -289,8 +289,8 @@ async fn main() -> Result<()> {
                     )
                     .unwrap();
                 } else {
-                    let file = File::create(file)?;
-                    io::copy(&mut buf, &mut &file)?;
+                    let mut file = File::create(file)?;
+                    io::copy(&mut buf, &mut file)?;
                 }
             } else {
                 eprintln!("No output file specified. Write the bits to stdout.");
