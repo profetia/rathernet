@@ -111,7 +111,7 @@ async fn main() -> Result<()> {
 
             let read_stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
             let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
-            let config = AtherStreamConfig::new((2000, 8001), 2000, config.clone());
+            let config = AtherStreamConfig::new(10000, 15000, config.clone());
             let mut read_ather = AtherInputStream::new(config.clone(), read_stream);
             let write_ather = AtherOutputStream::new(config.clone(), write_stream);
 
@@ -223,7 +223,7 @@ async fn main() -> Result<()> {
 
             let read_stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
             let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
-            let config = AtherStreamConfig::new((10000, 10001), 15000, config.clone());
+            let config = AtherStreamConfig::new(10000, 15000, config.clone());
             let read_ather = AtherInputStream::new(config.clone(), read_stream);
             let write_ather = AtherOutputStream::new(config.clone(), write_stream);
 
@@ -267,7 +267,7 @@ async fn main() -> Result<()> {
 
             let read_stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
             let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
-            let config = AtherStreamConfig::new((10000, 10001), 15000, config.clone());
+            let config = AtherStreamConfig::new(10000, 15000, config.clone());
             let read_ather = AtherInputStream::new(config.clone(), read_stream);
             let write_ather = AtherOutputStream::new(config.clone(), write_stream);
 
