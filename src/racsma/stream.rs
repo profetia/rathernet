@@ -1,8 +1,5 @@
 use super::{
-    builtin::{
-        ACK_DIFS_TIMEOUT, ACK_LINK_ERROR_THRESHOLD, ACK_RECIEVE_TIMEOUT, ACK_SIFS_TIMEOUT,
-        PAYLOAD_BITS_LEN,
-    },
+    builtin::{ACK_LINK_ERROR_THRESHOLD, ACK_RECIEVE_TIMEOUT, PAYLOAD_BITS_LEN},
     frame::{AckFrame, DataFrame, Frame},
 };
 use crate::rather::{AtherInputStream, AtherOutputStream};
@@ -61,9 +58,9 @@ impl AcsmaIoStream {
         for (index, frame) in frames.enumerate() {
             let mut retry = 0usize;
             loop {
-                time::sleep(ACK_DIFS_TIMEOUT).await;
+                println!("Sending frame {}", index);
                 self.ostream.write(&frame).await;
-                println!("Send frame {}", index);
+                println!("Sent frame {}", index);
                 let ack_future = async {
                     while let Some(bits) = self.istream.next().await {
                         if let Ok(frame) = AckFrame::try_from(bits) {
@@ -81,6 +78,7 @@ impl AcsmaIoStream {
                 if time::timeout(ACK_RECIEVE_TIMEOUT, ack_future).await.is_ok() {
                     break;
                 } else {
+                    println!("Timeout ACK for index");
                     retry += 1;
                     if retry >= ACK_LINK_ERROR_THRESHOLD {
                         return Err(AcsmaIoError::LinkError(retry).into());
@@ -99,22 +97,20 @@ impl AcsmaIoStream {
             if let Ok(frame) = DataFrame::try_from(bits) {
                 let header = frame.header();
                 if header.src == src && header.dest == self.config.address {
-                    let payload = frame.payload().unwrap();
+                    println!("Recieve frame with index {}", header.seq);
+                    let ack = AckFrame::new(header.dest, header.src, header.seq);
+                    println!("Sending ACK for index {}", header.seq);
+                    self.ostream.write(&Into::<BitVec>::into(ack)).await;
+                    println!(
+                        "Sent ACK for index {}, total recieved {}",
+                        header.seq, total_len
+                    );
 
+                    let payload = frame.payload().unwrap();
                     bucket.entry(header.seq).or_insert_with(|| {
-                        println!("Recieve frame with index {}", header.seq);
                         total_len += payload.len();
                         payload.to_owned()
                     });
-
-                    time::sleep(ACK_SIFS_TIMEOUT).await;
-                    let ack = AckFrame::new(header.dest, header.src, header.seq);
-                    self.ostream.write(&Into::<BitVec>::into(ack)).await;
-
-                    println!(
-                        "Send ACK for index {}, total recieved {}",
-                        header.seq, total_len
-                    );
 
                     if total_len >= buf.len() {
                         break;
