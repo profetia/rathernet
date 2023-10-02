@@ -1,5 +1,8 @@
 use super::{
-    builtin::{ACK_LINK_ERROR_THRESHOLD, ACK_RECIEVE_TIMEOUT, PAYLOAD_BITS_LEN},
+    builtin::{
+        ACK_DIFS_TIMEOUT, ACK_LINK_ERROR_THRESHOLD, ACK_RECIEVE_TIMEOUT, ACK_SIFS_TIMEOUT,
+        PAYLOAD_BITS_LEN,
+    },
     frame::{AckFrame, DataFrame, Frame},
 };
 use crate::rather::{AtherInputStream, AtherOutputStream};
@@ -55,16 +58,20 @@ impl AcsmaIoStream {
                 ))
             });
 
-        for frame in frames {
+        for (index, frame) in frames.enumerate() {
             let mut retry = 0usize;
             loop {
+                time::sleep(ACK_DIFS_TIMEOUT).await;
                 self.ostream.write(&frame).await;
-                println!("Send frame");
+                println!("Send frame {}", index);
                 let ack_future = async {
                     while let Some(bits) = self.istream.next().await {
                         if let Ok(frame) = AckFrame::try_from(bits) {
                             let header = frame.header();
-                            if header.src == dest && header.dest == self.config.address {
+                            if header.src == dest
+                                && header.dest == self.config.address
+                                && header.seq == index
+                            {
                                 println!("Recieve ACK for index {}", header.seq);
                                 break;
                             }
@@ -100,10 +107,14 @@ impl AcsmaIoStream {
                         payload.to_owned()
                     });
 
+                    time::sleep(ACK_SIFS_TIMEOUT).await;
                     let ack = AckFrame::new(header.dest, header.src, header.seq);
                     self.ostream.write(&Into::<BitVec>::into(ack)).await;
 
-                    println!("Send ACK for index {}", header.seq);
+                    println!(
+                        "Send ACK for index {}, total recieved {}",
+                        header.seq, total_len
+                    );
 
                     if total_len >= buf.len() {
                         break;
