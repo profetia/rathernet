@@ -30,5 +30,7 @@ pub const PAYLOAD_BITS_LEN: usize = ATHER_PAYLOAD_BITS_LEN
     - SEQ_BITS_LEN
     - PARITY_BITS_LEN;
 
-pub const ACK_LINK_ERROR_THRESHOLD: usize = 5;
-pub const ACK_RECIEVE_TIMEOUT: Duration = Duration::from_millis(3000);
+pub const ACK_LINK_ERROR_THRESHOLD: usize = 10;
+pub const ACK_RECIEVE_TIMEOUT: Duration = Duration::from_millis(200);
+pub const ACK_SIFS_TIMEOUT: Duration = Duration::from_millis(20);
+pub const ACK_DIFS_TIMEOUT: Duration = Duration::from_millis(50);
