@@ -24,25 +24,37 @@ use tokio_stream::{Stream, StreamExt};
 
 #[derive(Debug, Clone)]
 pub struct AtherStreamConfig {
-    pub frequency: u32,
     pub bit_rate: u32,
     pub warmup: Warmup,
     pub preamble: Preamble,
-    pub symbols: (Symbol, Symbol),
+    pub frequencies: Vec<u32>,
+    pub symbols: Vec<(Symbol, Symbol)>,
     pub stream_config: SupportedStreamConfig,
 }
 
 impl AtherStreamConfig {
-    pub fn new(frequency: u32, bit_rate: u32, stream_config: SupportedStreamConfig) -> Self {
+    pub fn new(
+        frequency_range: (u32, u32),
+        bit_rate: u32,
+        stream_config: SupportedStreamConfig,
+    ) -> Self {
         let duration = 1.0 / bit_rate as f32;
         let sample_rate = stream_config.sample_rate().0;
 
+        let frequencies = (frequency_range.0..frequency_range.1)
+            .step_by(bit_rate as usize)
+            .collect::<Vec<u32>>();
+        let symbols = frequencies
+            .iter()
+            .map(|&frequency| Symbol::new(frequency, sample_rate, duration))
+            .collect::<Vec<(Symbol, Symbol)>>();
+
         Self {
-            frequency,
             bit_rate,
             warmup: Warmup::new(WARMUP_SYMBOL_LEN, sample_rate, duration),
             preamble: Preamble::new(PREAMBLE_SYMBOL_LEN, sample_rate, duration),
-            symbols: Symbol::new(frequency, sample_rate, duration),
+            frequencies,
+            symbols,
             stream_config,
         }
     }
@@ -78,16 +90,27 @@ impl AtherOutputStream {
 fn encode_frame(config: &AtherStreamConfig, bits: &BitSlice) -> AudioSamples<f32> {
     assert!(bits.len() <= PAYLOAD_BITS_LEN);
 
-    let length = bits.len().encode(&config.symbols)[..LENGTH_BITS_LEN].to_owned();
-    let payload = bits.encode(&config.symbols);
+    let default_symbols = &config.symbols[0];
+    let symbol_len = default_symbols.0 .0.len();
+    let ofdm_len = config.symbols.len();
 
-    [
-        config.preamble.0.clone(),
-        length.into_iter().collect(),
-        payload.into_iter().collect(),
-    ]
-    .concat()
-    .into()
+    let mut samples = vec![];
+    samples.push(config.preamble.0.clone());
+    let length = bits.len().encode(default_symbols)[..LENGTH_BITS_LEN].to_owned();
+    samples.extend(length.into_iter().map(|symbol| symbol.0));
+
+    for chunk in bits.chunks(ofdm_len) {
+        let mut sample = vec![0f32; symbol_len];
+        for (bit, symbols) in chunk.iter().zip(config.symbols.iter()) {
+            let symbol = if *bit { &symbols.1 } else { &symbols.0 };
+            for (sample_item, symbol_item) in sample.iter_mut().zip(symbol.0.iter()) {
+                *sample_item += symbol_item;
+            }
+        }
+        samples.push(sample.into());
+    }
+
+    samples.concat().into()
 }
 
 trait AtherSymbolEncoding {
@@ -272,12 +295,10 @@ async fn decode_frame(
     buf: &mut Vec<f32>,
 ) -> Option<BitVec> {
     let sample_rate = config.stream_config.sample_rate().0 as f32;
-    let band_pass = (
-        config.frequency as f32 - 1000.,
-        config.frequency as f32 + 1000.,
-    );
     let preamble_len = config.preamble.0.len();
-    let symbol_len = config.symbols.0 .0.len();
+    let default_frequency = &config.frequencies[0];
+    let default_symbols = &config.symbols[0];
+    let symbol_len = default_symbols.0 .0.len();
 
     // println!("Decode frame...");
 
@@ -303,8 +324,14 @@ async fn decode_frame(
     while length.len() < LENGTH_BITS_LEN {
         if buf.len() >= symbol_len {
             let mut symbol = buf[..symbol_len].to_owned();
-            symbol.band_pass(sample_rate, band_pass);
-            let value = signal::dot_product(&config.symbols.1 .0, &symbol);
+            symbol.band_pass(
+                sample_rate,
+                (
+                    (default_frequency - config.bit_rate / 2) as f32,
+                    (default_frequency + config.bit_rate / 2) as f32,
+                ),
+            );
+            let value = signal::dot_product(&default_symbols.1 .0, &symbol);
             length.push(value > 0.);
             *buf = buf.split_off(symbol_len);
         } else {
@@ -320,10 +347,18 @@ async fn decode_frame(
     let mut payload = bitvec![];
     while payload.len() < length {
         if buf.len() >= symbol_len {
-            let mut symbol = buf[..symbol_len].to_owned();
-            symbol.band_pass(sample_rate, band_pass);
-            let value = signal::dot_product(&config.symbols.1 .0, &symbol);
-            payload.push(value > 0.);
+            for (frequency, symbols) in config.frequencies.iter().zip(config.symbols.iter()) {
+                let mut symbol = buf[..symbol_len].to_owned();
+                symbol.band_pass(
+                    sample_rate,
+                    (
+                        (frequency - config.bit_rate / 2) as f32,
+                        (frequency + config.bit_rate / 2) as f32,
+                    ),
+                );
+                let value = signal::dot_product(&symbols.1 .0, &symbol);
+                payload.push(value > 0.);
+            }
 
             *buf = buf.split_off(symbol_len);
         } else {
@@ -334,7 +369,7 @@ async fn decode_frame(
         }
     }
 
-    Some(payload)
+    Some(payload[..length].to_owned())
 }
 
 impl ContinuousStream for AtherInputStream {
