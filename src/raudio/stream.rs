@@ -277,10 +277,7 @@ where
 /// After that, it will keep running until it is suspended. Once it is suspended, it will
 /// yield `None` until it is resumed. Resuming the stream will reset the stream to its
 /// initial state, and it will be lazy again until it is polled for the first time.
-pub trait ContinuousStream: Stream
-where
-    Self: Sized,
-{
+pub trait ContinuousStream: Stream {
     fn suspend(&self);
 
     fn resume(&self);
