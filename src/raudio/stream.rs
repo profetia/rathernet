@@ -13,72 +13,21 @@ use crossbeam::{
 };
 use rodio::{Sample, Sink, Source};
 use std::{
-    future::Future,
     mem,
-    sync::{Arc, Mutex},
+    sync::Arc,
     task::{Poll, Waker},
-    thread,
     time::Duration,
 };
+use tokio::time;
 use tokio_stream::{Stream, StreamExt};
 
-pub struct AudioOutputStream<S>
-where
-    S: Source + Send + 'static,
-    f32: FromSample<S::Item>,
-    S::Item: Sample + Send,
-{
-    _stream: AsioOutputStream,
-    sink: Arc<Sink>,
-    sender: Sender<AudioOutputTask<S>>,
+pub struct AudioOutputStream {
+    stream: AsioOutputStream,
 }
 
-impl<S> AudioOutputStream<S>
-where
-    S: Source + Send + 'static,
-    f32: FromSample<S::Item>,
-    S::Item: Sample + Send,
-{
+impl AudioOutputStream {
     fn try_from_stream(stream: AsioOutputStream) -> Result<Self> {
-        let sink = Arc::new(Sink::try_new(&stream.handle)?);
-        let (sender, receiver) = channel::unbounded::<AudioOutputTask<S>>();
-        thread::spawn({
-            let sink = Arc::clone(&sink);
-            move || {
-                while let Ok(task) = receiver.recv() {
-                    {
-                        let mut guard = task.lock().unwrap();
-                        match guard.take() {
-                            AudioOutputTaskState::Ready(source, waker) => {
-                                sink.append(source);
-                                *guard = AudioOutputTaskState::Running(waker);
-                            }
-                            state => {
-                                *guard = state;
-                                continue;
-                            }
-                        }
-                    }
-
-                    sink.sleep_until_end();
-
-                    let mut guard = task.lock().unwrap();
-                    match guard.take() {
-                        AudioOutputTaskState::Running(waker) => {
-                            waker.wake();
-                            *guard = AudioOutputTaskState::Completed;
-                        }
-                        state => *guard = state,
-                    }
-                }
-            }
-        });
-
-        Ok(Self {
-            _stream: stream,
-            sink,
-            sender,
-        })
+        Ok(Self { stream })
     }
 
     pub fn try_from_device_config(
@@ -97,122 +46,52 @@ where
     }
 }
 
-impl<S> AudioOutputStream<S>
-where
-    S: Source + Send + 'static,
-    f32: FromSample<S::Item>,
-    S::Item: Sample + Send,
-{
-    pub fn write(&self, source: S) -> AudioOutputFuture<S> {
-        let task = Arc::new(Mutex::new(AudioOutputTaskState::Pending(source)));
-        AudioOutputFuture {
-            sink: self.sink.clone(),
-            sender: self.sender.clone(),
-            task,
-        }
+impl AudioOutputStream {
+    pub async fn write<S>(&self, source: S) -> Result<()>
+    where
+        S: Source + Send + 'static,
+        f32: FromSample<S::Item>,
+        S::Item: Sample + Send,
+    {
+        let sink = Arc::new(Sink::try_new(&self.stream.handle)?);
+        let handle = tokio::spawn({
+            let sink = sink.clone();
+            async move {
+                sink.append(source);
+                sink.sleep_until_end();
+            }
+        });
+        let task = AudioOutputTask::new(sink);
+        handle.await?;
+        drop(task);
+        Ok(())
     }
 
-    pub async fn write_timeout(&self, source: S, timeout: Duration) {
-        let write_future = self.write(source);
-        let timeout_future = tokio::time::sleep(timeout);
-        tokio::select! {
-            _ = write_future => {},
-            _ = timeout_future => {},
-        }
-    }
-}
-
-type AudioOutputTask<S> = Arc<Mutex<AudioOutputTaskState<S>>>;
-
-enum AudioOutputTaskState<S>
-where
-    S: Source + Send + 'static,
-    f32: FromSample<S::Item>,
-    S::Item: Sample + Send,
-{
-    Pending(S),
-    Ready(S, Waker),
-    Running(Waker),
-    Completed,
-}
-
-impl<S> AudioOutputTaskState<S>
-where
-    S: Source + Send + 'static,
-    f32: FromSample<S::Item>,
-    S::Item: Sample + Send,
-{
-    fn take(&mut self) -> Self {
-        mem::replace(self, AudioOutputTaskState::Completed)
-    }
-}
-
-pub struct AudioOutputFuture<S>
-where
-    S: Source + Send + 'static,
-    f32: FromSample<S::Item>,
-    S::Item: Sample + Send,
-{
-    sink: Arc<Sink>,
-    sender: Sender<AudioOutputTask<S>>,
-    task: AudioOutputTask<S>,
-}
-
-impl<S> Future for AudioOutputFuture<S>
-where
-    S: Source + Send + 'static,
-    f32: FromSample<S::Item>,
-    S::Item: Sample + Send,
-{
-    type Output = ();
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        let mut guard = self.task.lock().unwrap();
-        match guard.take() {
-            AudioOutputTaskState::Pending(source) => {
-                *guard = AudioOutputTaskState::Ready(source, cx.waker().clone());
-                self.sender.send(self.task.clone()).unwrap();
-                Poll::Pending
-            }
-            AudioOutputTaskState::Ready(source, _) => {
-                *guard = AudioOutputTaskState::Ready(source, cx.waker().clone());
-                Poll::Pending
-            }
-            AudioOutputTaskState::Running(_) => {
-                *guard = AudioOutputTaskState::Running(cx.waker().clone());
-                Poll::Pending
-            }
-            _ => Poll::Ready(()),
+    pub async fn write_timeout<S>(&self, source: S, timeout: Duration) -> Result<()>
+    where
+        S: Source + Send + 'static,
+        f32: FromSample<S::Item>,
+        S::Item: Sample + Send,
+    {
+        let result = time::timeout(timeout, self.write(source)).await;
+        match result {
+            Ok(result) => result,
+            Err(err) => Err(err.into()),
         }
     }
 }
 
-impl<S> Drop for AudioOutputFuture<S>
-where
-    S: Source + Send + 'static,
-    f32: FromSample<S::Item>,
-    S::Item: Sample + Send,
-{
+struct AudioOutputTask(Arc<Sink>);
+
+impl AudioOutputTask {
+    fn new(sink: Arc<Sink>) -> Self {
+        Self(sink)
+    }
+}
+
+impl Drop for AudioOutputTask {
     fn drop(&mut self) {
-        let mut guard = self.task.lock().unwrap();
-        match guard.take() {
-            AudioOutputTaskState::Pending(_) => {
-                *guard = AudioOutputTaskState::Completed;
-            }
-            AudioOutputTaskState::Ready(_, waker) => {
-                waker.wake();
-                *guard = AudioOutputTaskState::Completed;
-            }
-            AudioOutputTaskState::Running(waker) => {
-                self.sink.clear();
-                waker.wake();
-                *guard = AudioOutputTaskState::Completed;
-            }
-            _ => {}
-        }
+        self.0.clear();
     }
 }
 

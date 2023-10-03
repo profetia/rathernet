@@ -1,4 +1,4 @@
-use std::{fs::File, io::BufReader, path::PathBuf};
+use std::{fs::File, io::BufReader, path::PathBuf, time::Duration};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -106,10 +106,10 @@ async fn main() -> Result<()> {
             let source = Decoder::new(file)?;
             if let Some(duration) = elapse {
                 stream
-                    .write_timeout(source, std::time::Duration::from_secs(duration))
-                    .await;
+                    .write_timeout(source, Duration::from_secs(duration))
+                    .await?;
             } else {
-                stream.write(source).await;
+                stream.write(source).await?;
             }
         }
         Commands::Read {
@@ -140,7 +140,7 @@ async fn main() -> Result<()> {
             } else {
                 eprintln!("No output file specified. Playing audio to default output device.");
                 let stream = AudioOutputStream::try_default()?;
-                stream.write(track).await;
+                stream.write(track).await?;
             }
         }
         Commands::Duplex {
@@ -167,8 +167,8 @@ async fn main() -> Result<()> {
             let source = Decoder::new(BufReader::new(File::open(source)?))?;
 
             let (_, data) = tokio::join!(
-                write_stream.write_timeout(source, std::time::Duration::from_secs(elapse)),
-                read_stream.read_timeout(std::time::Duration::from_secs(elapse))
+                write_stream.write_timeout(source, Duration::from_secs(elapse)),
+                read_stream.read_timeout(Duration::from_secs(elapse))
             );
 
             let track = AudioTrack::new(config, data);
@@ -181,7 +181,7 @@ async fn main() -> Result<()> {
             } else {
                 eprintln!("No output file specified. Playing audio to default output device.");
                 let stream = AudioOutputStream::try_default()?;
-                stream.write(track).await;
+                stream.write(track).await?;
             }
         }
         Commands::List { r#type, config } => {

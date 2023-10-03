@@ -10,6 +10,7 @@ use super::{
 use crate::raudio::{
     AudioInputStream, AudioOutputStream, AudioSamples, AudioTrack, ContinuousStream,
 };
+use anyhow::Result;
 use bitvec::prelude::*;
 use cpal::SupportedStreamConfig;
 use std::{
@@ -50,28 +51,30 @@ impl AtherStreamConfig {
 
 pub struct AtherOutputStream {
     config: AtherStreamConfig,
-    stream: AudioOutputStream<AudioTrack<f32>>,
+    stream: AudioOutputStream,
 }
 
 impl AtherOutputStream {
-    pub fn new(config: AtherStreamConfig, stream: AudioOutputStream<AudioTrack<f32>>) -> Self {
+    pub fn new(config: AtherStreamConfig, stream: AudioOutputStream) -> Self {
         Self { config, stream }
     }
 }
 
 impl AtherOutputStream {
-    pub async fn write(&self, bits: &BitSlice) {
+    pub async fn write(&self, bits: &BitSlice) -> Result<()> {
         let mut frame = vec![self.config.warmup.0.clone()];
         frame.push(encode_frame(&self.config, bits));
         let track = AudioTrack::new(self.config.stream_config.clone(), frame.concat().into());
-        self.stream.write(track).await;
+        self.stream.write(track).await?;
+        Ok(())
     }
 
-    pub async fn write_timeout(&self, bits: &BitSlice, timeout: Duration) {
+    pub async fn write_timeout(&self, bits: &BitSlice, timeout: Duration) -> Result<()> {
         let mut frame = vec![self.config.warmup.0.clone()];
         frame.push(encode_frame(&self.config, bits));
         let track = AudioTrack::new(self.config.stream_config.clone(), frame.concat().into());
-        self.stream.write_timeout(track, timeout).await;
+        self.stream.write_timeout(track, timeout).await?;
+        Ok(())
     }
 }
 

@@ -132,7 +132,7 @@ async fn main() -> Result<()> {
 
             let write_future = async {
                 for chunk in bits.chunks(PAYLOAD_BITS_LEN) {
-                    write_ather.write(chunk).await;
+                    write_ather.write(chunk).await.unwrap();
                 }
             };
             let read_future = async {
