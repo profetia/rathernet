@@ -59,7 +59,7 @@ impl AcsmaIoStream {
             let mut retry = 0usize;
             loop {
                 println!("Sending frame {}", index);
-                self.ostream.write(&frame).await;
+                self.ostream.write(&frame).await?;
                 println!("Sent frame {}", index);
                 let ack_future = async {
                     while let Some(bits) = self.istream.next().await {
@@ -100,7 +100,7 @@ impl AcsmaIoStream {
                     println!("Recieve frame with index {}", header.seq);
                     let ack = AckFrame::new(header.dest, header.src, header.seq);
                     println!("Sending ACK for index {}", header.seq);
-                    self.ostream.write(&Into::<BitVec>::into(ack)).await;
+                    self.ostream.write(&Into::<BitVec>::into(ack)).await?;
                     println!(
                         "Sent ACK for index {}, total recieved {}",
                         header.seq, total_len

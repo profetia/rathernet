@@ -110,7 +110,7 @@ async fn calibrate(elapse: u64, device: Option<String>) -> Result<()> {
 
     let track = AudioTrack::new(config, signal);
 
-    stream.write(track).await;
+    stream.write(track).await?;
 
     Ok(())
 }
@@ -155,7 +155,7 @@ async fn main() -> Result<()> {
                 }
             }
 
-            ather.write(&bits).await;
+            ather.write(&bits).await?;
         }
         Commands::Read {
             file,
