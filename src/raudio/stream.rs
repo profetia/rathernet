@@ -7,18 +7,13 @@ use cpal::{
     traits::{DeviceTrait, StreamTrait},
     FromSample, SampleFormat, SizedSample, SupportedStreamConfig, SupportedStreamConfigsError,
 };
-use crossbeam::{
-    channel::{self, Receiver, Sender},
-    sync::ShardedLock,
-};
+use crossbeam::sync::ShardedLock;
 use rodio::{Sample, Sink, Source};
-use std::{
-    mem,
-    sync::Arc,
-    task::{Poll, Waker},
-    time::Duration,
+use std::{sync::Arc, task::Poll, time::Duration};
+use tokio::{
+    sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
+    time,
 };
-use tokio::time;
 use tokio_stream::{Stream, StreamExt};
 
 pub struct AudioOutputStream {
@@ -96,9 +91,9 @@ impl Drop for AudioOutputTask {
 }
 
 pub struct AudioInputStream<S: Sample> {
-    stream: AsioInputStream,
-    task: AudioInputTask,
-    reciever: Receiver<AudioSamples<S>>,
+    config: SupportedStreamConfig,
+    device: AsioDevice,
+    task: AudioInputTask<S>,
 }
 
 impl<S> AudioInputStream<S>
@@ -115,32 +110,20 @@ where
         device: &AsioDevice,
         config: SupportedStreamConfig,
     ) -> Result<Self> {
-        let (sender, reciever) = channel::unbounded::<AudioSamples<S>>();
-        let task = Arc::new(ShardedLock::new(AudioInputTaskState::Pending));
+        let task = ShardedLock::new(AudioInputTaskState::Pending);
 
-        let stream = match config.sample_format() {
-            SampleFormat::I8 => {
-                build_input_stream::<i8, S>(device, config.clone(), sender.clone(), task.clone())
-            }
-            SampleFormat::I16 => {
-                build_input_stream::<i16, S>(device, config.clone(), sender.clone(), task.clone())
-            }
-            SampleFormat::I32 => {
-                build_input_stream::<i32, S>(device, config.clone(), sender.clone(), task.clone())
-            }
-            SampleFormat::F32 => {
-                build_input_stream::<f32, S>(device, config.clone(), sender.clone(), task.clone())
-            }
-            _ => return Err(SupportedStreamConfigsError::InvalidArgument.into()),
-        }?;
-
-        stream.0.pause().unwrap();
-
-        Ok(AudioInputStream {
-            stream,
-            task,
-            reciever,
-        })
+        if !matches!(
+            config.sample_format(),
+            SampleFormat::I8 | SampleFormat::I16 | SampleFormat::I32 | SampleFormat::F32
+        ) {
+            Err(SupportedStreamConfigsError::InvalidArgument.into())
+        } else {
+            Ok(AudioInputStream {
+                config,
+                device: device.clone(),
+                task,
+            })
+        }
     }
 
     pub fn try_from_device(device: &AsioDevice) -> Result<Self> {
@@ -156,16 +139,15 @@ where
 
 fn build_input_stream<T, S>(
     device: &AsioDevice,
-    config: SupportedStreamConfig,
-    sender: Sender<AudioSamples<S>>,
-    task: AudioInputTask,
+    config: &SupportedStreamConfig,
+    sender: UnboundedSender<AudioSamples<S>>,
 ) -> Result<AsioInputStream>
 where
     T: SizedSample,
     S: Send + Sample + FromSample<T> + 'static,
 {
     Ok(AsioInputStream::new(device.0.build_input_stream(
-        &config.into(),
+        &config.clone().into(),
         {
             move |data: &[T], _: _| {
                 let data = data
@@ -173,11 +155,7 @@ where
                     .map(|sample| S::from_sample(*sample))
                     .collect::<AudioSamples<S>>();
 
-                let guard = task.read().unwrap();
-                if let AudioInputTaskState::Running(ref waker) = *guard {
-                    sender.send(data).unwrap();
-                    waker.wake_by_ref();
-                }
+                sender.send(data).unwrap();
             }
         },
         |error| eprintln!("an error occurred on input stream: {}", error),
@@ -217,18 +195,12 @@ where
     }
 }
 
-type AudioInputTask = Arc<ShardedLock<AudioInputTaskState>>;
+type AudioInputTask<S> = ShardedLock<AudioInputTaskState<S>>;
 
-enum AudioInputTaskState {
+enum AudioInputTaskState<S> {
     Pending,
-    Running(Waker),
+    Running(AsioInputStream, UnboundedReceiver<AudioSamples<S>>),
     Suspended,
-}
-
-impl AudioInputTaskState {
-    fn take(&mut self) -> AudioInputTaskState {
-        mem::replace(self, AudioInputTaskState::Suspended)
-    }
 }
 
 impl<S> Stream for AudioInputStream<S>
@@ -248,27 +220,35 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         let mut guard = self.task.write().unwrap();
-        match guard.take() {
-            AudioInputTaskState::Pending => {
-                *guard = AudioInputTaskState::Running(cx.waker().clone());
-                self.stream.0.play().unwrap();
-                Poll::Pending
-            }
-            AudioInputTaskState::Running(_) => {
-                *guard = AudioInputTaskState::Running(cx.waker().clone());
-                let mut samples: Vec<S> = vec![];
-                let iter = self.reciever.try_iter();
-                for data in iter {
-                    samples.extend(data.iter());
-                }
 
-                if samples.is_empty() {
-                    Poll::Pending
-                } else {
-                    Poll::Ready(Some(samples.into_boxed_slice()))
+        if matches!(*guard, AudioInputTaskState::Suspended) {
+            return Poll::Ready(None);
+        }
+
+        if matches!(*guard, AudioInputTaskState::Pending) {
+            let (sender, reciever) = mpsc::unbounded_channel();
+            let stream = match self.config.sample_format() {
+                SampleFormat::I8 => build_input_stream::<i8, S>(&self.device, &self.config, sender),
+                SampleFormat::I16 => {
+                    build_input_stream::<i16, S>(&self.device, &self.config, sender)
                 }
+                SampleFormat::I32 => {
+                    build_input_stream::<i32, S>(&self.device, &self.config, sender)
+                }
+                SampleFormat::F32 => {
+                    build_input_stream::<f32, S>(&self.device, &self.config, sender)
+                }
+                _ => unreachable!(),
             }
-            AudioInputTaskState::Suspended => Poll::Ready(None),
+            .unwrap();
+            stream.0.play().unwrap();
+            *guard = AudioInputTaskState::Running(stream, reciever);
+        }
+
+        if let AudioInputTaskState::Running(_, reciever) = &mut *guard {
+            reciever.poll_recv(cx)
+        } else {
+            unreachable!()
         }
     }
 }
@@ -295,22 +275,18 @@ where
 {
     fn suspend(&self) {
         let mut guard = self.task.write().unwrap();
-        match guard.take() {
-            AudioInputTaskState::Running(waker) => {
-                self.stream.0.pause().unwrap();
-                *guard = AudioInputTaskState::Suspended;
-                waker.wake();
-            }
-            AudioInputTaskState::Pending => *guard = AudioInputTaskState::Suspended,
-            content => *guard = content,
+        if matches!(*guard, AudioInputTaskState::Pending) {
+            *guard = AudioInputTaskState::Suspended;
+        } else if let AudioInputTaskState::Running(stream, _) = &*guard {
+            stream.0.pause().unwrap();
+            *guard = AudioInputTaskState::Suspended;
         }
     }
 
     fn resume(&self) {
         let mut guard = self.task.write().unwrap();
-        match guard.take() {
-            AudioInputTaskState::Suspended => *guard = AudioInputTaskState::Pending,
-            content => *guard = content,
+        if matches!(*guard, AudioInputTaskState::Suspended) {
+            *guard = AudioInputTaskState::Pending;
         }
     }
 }
