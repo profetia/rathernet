@@ -1,6 +1,7 @@
 use anyhow::Result;
 use cpal::{traits::HostTrait, Device, Host, Stream, SupportedStreamConfig};
 use rodio::{DeviceTrait, OutputStream, OutputStreamHandle, StreamError};
+use std::sync::Arc;
 
 pub struct AsioHost(pub Host);
 
@@ -11,13 +12,14 @@ impl AsioHost {
     }
 }
 
-pub struct AsioDevice(pub Device);
+#[derive(Clone)]
+pub struct AsioDevice(pub Arc<Device>);
 
 impl AsioDevice {
     pub fn try_default() -> Result<Self> {
         let host = AsioHost::try_new()?;
         match host.0.default_input_device() {
-            Some(device) => Ok(Self(device)),
+            Some(device) => Ok(Self(device.into())),
             None => Err(StreamError::NoDevice.into()),
         }
     }
@@ -29,7 +31,7 @@ impl AsioDevice {
             .devices()?
             .find(|d| d.name().map(|s| s == name).unwrap_or(false))
         {
-            Some(device) => Ok(Self(device)),
+            Some(device) => Ok(Self(device.into())),
             None => Err(StreamError::NoDevice.into()),
         }
     }
