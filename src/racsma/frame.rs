@@ -209,6 +209,110 @@ impl TryFrom<BitVec> for AckFrame {
     }
 }
 
+pub enum AcsmaFrame {
+    Data(DataFrame),
+    Ack(AckFrame),
+}
+
+impl From<AcsmaFrame> for BitVec {
+    fn from(value: AcsmaFrame) -> Self {
+        match value {
+            AcsmaFrame::Data(data) => data.into(),
+            AcsmaFrame::Ack(ack) => ack.into(),
+        }
+    }
+}
+
+impl TryFrom<BitVec> for AcsmaFrame {
+    type Error = Error;
+
+    fn try_from(value: BitVec) -> Result<Self, Self::Error> {
+        verify(&value)?;
+        let header = FrameHeader::from(
+            &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
+        );
+
+        if header.r#type == FrameType::Data.bits() {
+            let payload = value[ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN
+                ..value.len() - PARITY_BITS_LEN]
+                .to_owned();
+            Ok(AcsmaFrame::Data(DataFrame { header, payload }))
+        } else if header.r#type == FrameType::Ack.bits() {
+            Ok(AcsmaFrame::Ack(AckFrame { header }))
+        } else {
+            Err(FrameDecodeError::UnknownFrameType(header.r#type).into())
+        }
+    }
+}
+
+impl Frame for AcsmaFrame {
+    fn header(&self) -> &FrameHeader {
+        match self {
+            AcsmaFrame::Data(data) => data.header(),
+            AcsmaFrame::Ack(ack) => ack.header(),
+        }
+    }
+
+    fn payload(&self) -> Option<&BitSlice> {
+        match self {
+            AcsmaFrame::Data(data) => data.payload(),
+            AcsmaFrame::Ack(ack) => ack.payload(),
+        }
+    }
+}
+
+pub enum NonAckFrame {
+    Data(DataFrame),
+}
+
+impl From<NonAckFrame> for BitVec {
+    fn from(value: NonAckFrame) -> Self {
+        match value {
+            NonAckFrame::Data(data) => data.into(),
+        }
+    }
+}
+
+impl TryFrom<BitVec> for NonAckFrame {
+    type Error = Error;
+
+    fn try_from(value: BitVec) -> Result<Self, Self::Error> {
+        verify(&value)?;
+        let header = FrameHeader::from(
+            &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
+        );
+
+        if header.r#type == FrameType::Data.bits() {
+            let payload = value[ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN
+                ..value.len() - PARITY_BITS_LEN]
+                .to_owned();
+            Ok(NonAckFrame::Data(DataFrame { header, payload }))
+        } else if header.r#type == FrameType::Ack.bits() {
+            return Err(FrameDecodeError::UnexpectedFrameType(
+                header.r#type,
+                FrameType::Data.bits(),
+            )
+            .into());
+        } else {
+            Err(FrameDecodeError::UnknownFrameType(header.r#type).into())
+        }
+    }
+}
+
+impl Frame for NonAckFrame {
+    fn header(&self) -> &FrameHeader {
+        match self {
+            NonAckFrame::Data(data) => data.header(),
+        }
+    }
+
+    fn payload(&self) -> Option<&BitSlice> {
+        match self {
+            NonAckFrame::Data(data) => data.payload(),
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum FrameDecodeError {
     #[error("Frame is too short (got {0}, expected {1})")]
@@ -217,4 +321,6 @@ pub enum FrameDecodeError {
     ParityCheckFailed(usize, usize),
     #[error("Unexpected frame type (got {0}, expected {1})")]
     UnexpectedFrameType(usize, usize),
+    #[error("Unknown frame type (got {0})")]
+    UnknownFrameType(usize),
 }
