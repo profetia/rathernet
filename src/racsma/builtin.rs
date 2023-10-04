@@ -32,3 +32,6 @@ pub const PAYLOAD_BITS_LEN: usize = ATHER_PAYLOAD_BITS_LEN
 
 pub const ACK_LINK_ERROR_THRESHOLD: usize = 10;
 pub const ACK_RECIEVE_TIMEOUT: Duration = Duration::from_millis(100);
+
+pub const SOCKET_FRAMING_TIMEOUT: Duration = Duration::from_millis(100);
+pub const SOCKET_BACKOFF_TIMEOUT: Duration = Duration::from_millis(100);
