@@ -98,7 +98,7 @@ impl AcsmaIoStream {
                 let header = frame.header();
                 if header.src == src && header.dest == self.config.address {
                     println!("Recieve frame with index {}", header.seq);
-                    let ack = AckFrame::new(header.dest, header.src, header.seq);
+                    let ack = AckFrame::new(header.src, header.dest, header.seq);
                     println!("Sending ACK for index {}", header.seq);
                     self.ostream.write(&Into::<BitVec>::into(ack)).await?;
                     println!(
