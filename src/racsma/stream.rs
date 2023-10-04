@@ -1,7 +1,7 @@
 use super::{
     builtin::{ACK_LINK_ERROR_THRESHOLD, ACK_RECIEVE_TIMEOUT, PAYLOAD_BITS_LEN},
     frame::{AckFrame, DataFrame, Frame},
-    socket::{AcsmaIoConfig, AcsmaIoError},
+    socket::AcsmaIoError,
 };
 use crate::rather::{AtherInputStream, AtherOutputStream};
 use anyhow::Result;
@@ -10,15 +10,26 @@ use std::collections::BTreeMap;
 use tokio::time;
 use tokio_stream::StreamExt;
 
+#[derive(Clone)]
+pub struct AcsmaStreamConfig {
+    pub address: usize,
+}
+
+impl AcsmaStreamConfig {
+    pub fn new(address: usize) -> Self {
+        Self { address }
+    }
+}
+
 pub struct AcsmaIoStream {
-    config: AcsmaIoConfig,
+    config: AcsmaStreamConfig,
     istream: AtherInputStream,
     ostream: AtherOutputStream,
 }
 
 impl AcsmaIoStream {
     pub fn new(
-        config: AcsmaIoConfig,
+        config: AcsmaStreamConfig,
         istream: AtherInputStream,
         ostream: AtherOutputStream,
     ) -> Self {
