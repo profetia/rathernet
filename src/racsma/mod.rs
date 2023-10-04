@@ -1,6 +1,8 @@
 mod frame;
+mod socket;
 mod stream;
 
 pub mod builtin;
 
-pub use stream::{AcsmaIoConfig, AcsmaIoStream};
+pub use socket::{AcsmaIoConfig, AcsmaIoSocket};
+pub use stream::AcsmaIoStream;

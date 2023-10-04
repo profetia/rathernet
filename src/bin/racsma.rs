@@ -213,21 +213,23 @@ async fn main() -> Result<()> {
                 Some(name) => AsioDevice::try_from_name(&name)?,
                 None => AsioDevice::try_default()?,
             };
-            let default_config = device.0.default_output_config()?;
-            let config = SupportedStreamConfig::new(
+            let device_config = device.0.default_output_config()?;
+            let stream_config = SupportedStreamConfig::new(
                 1,
                 cpal::SampleRate(48000),
-                default_config.buffer_size().clone(),
-                default_config.sample_format(),
+                device_config.buffer_size().clone(),
+                device_config.sample_format(),
             );
 
-            let read_stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
-            let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
-            let config = AtherStreamConfig::new(10000, 15000, config.clone());
-            let read_ather = AtherInputStream::new(config.clone(), read_stream);
-            let write_ather = AtherOutputStream::new(config.clone(), write_stream);
+            let read_stream =
+                AudioInputStream::try_from_device_config(&device, stream_config.clone())?;
+            let write_stream =
+                AudioOutputStream::try_from_device_config(&device, stream_config.clone())?;
+            let ather_config = AtherStreamConfig::new(10000, 15000, stream_config.clone());
+            let read_ather = AtherInputStream::new(ather_config.clone(), read_stream);
+            let write_ather = AtherOutputStream::new(ather_config.clone(), write_stream);
 
-            let config = AcsmaIoConfig::new(0);
+            let config = AcsmaIoConfig::new(0, ather_config.clone());
             let mut acsma = AcsmaIoStream::new(config, read_ather, write_ather);
 
             let mut bits = bitvec![];
@@ -257,21 +259,23 @@ async fn main() -> Result<()> {
                 Some(name) => AsioDevice::try_from_name(&name)?,
                 None => AsioDevice::try_default()?,
             };
-            let default_config = device.0.default_output_config()?;
-            let config = SupportedStreamConfig::new(
+            let device_config = device.0.default_output_config()?;
+            let stream_config = SupportedStreamConfig::new(
                 1,
                 cpal::SampleRate(48000),
-                default_config.buffer_size().clone(),
-                default_config.sample_format(),
+                device_config.buffer_size().clone(),
+                device_config.sample_format(),
             );
 
-            let read_stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
-            let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
-            let config = AtherStreamConfig::new(10000, 15000, config.clone());
-            let read_ather = AtherInputStream::new(config.clone(), read_stream);
-            let write_ather = AtherOutputStream::new(config.clone(), write_stream);
+            let read_stream =
+                AudioInputStream::try_from_device_config(&device, stream_config.clone())?;
+            let write_stream =
+                AudioOutputStream::try_from_device_config(&device, stream_config.clone())?;
+            let ather_config = AtherStreamConfig::new(10000, 15000, stream_config.clone());
+            let read_ather = AtherInputStream::new(ather_config.clone(), read_stream);
+            let write_ather = AtherOutputStream::new(ather_config.clone(), write_stream);
 
-            let config = AcsmaIoConfig::new(0);
+            let config = AcsmaIoConfig::new(0, ather_config.clone());
             let mut acsma = AcsmaIoStream::new(config, read_ather, write_ather);
 
             let mut buf = bitvec![0; num_bits];
