@@ -4,5 +4,5 @@ mod stream;
 
 pub mod builtin;
 
-pub use socket::{AcsmaIoConfig, AcsmaIoSocket};
-pub use stream::AcsmaIoStream;
+pub use socket::{AcsmaIoSocket, AcsmaSocketConfig};
+pub use stream::{AcsmaIoStream, AcsmaStreamConfig};

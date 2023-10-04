@@ -1,7 +1,7 @@
 use anyhow::Result;
 use bitvec::prelude::*;
 use clap::{Parser, Subcommand, ValueEnum};
-use rathernet::racsma::{AcsmaIoConfig, AcsmaIoStream};
+use rathernet::racsma::{AcsmaIoStream, AcsmaStreamConfig};
 use rathernet::rather::builtin::PAYLOAD_BITS_LEN;
 use rathernet::rather::{AtherInputStream, AtherOutputStream, AtherStreamConfig};
 use rathernet::raudio::{AsioDevice, AudioInputStream, AudioOutputStream};
@@ -229,7 +229,7 @@ async fn main() -> Result<()> {
             let read_ather = AtherInputStream::new(ather_config.clone(), read_stream);
             let write_ather = AtherOutputStream::new(ather_config.clone(), write_stream);
 
-            let config = AcsmaIoConfig::new(0, ather_config.clone());
+            let config = AcsmaStreamConfig::new(0);
             let mut acsma = AcsmaIoStream::new(config, read_ather, write_ather);
 
             let mut bits = bitvec![];
@@ -275,7 +275,7 @@ async fn main() -> Result<()> {
             let read_ather = AtherInputStream::new(ather_config.clone(), read_stream);
             let write_ather = AtherOutputStream::new(ather_config.clone(), write_stream);
 
-            let config = AcsmaIoConfig::new(0, ather_config.clone());
+            let config = AcsmaStreamConfig::new(0);
             let mut acsma = AcsmaIoStream::new(config, read_ather, write_ather);
 
             let mut buf = bitvec![0; num_bits];
