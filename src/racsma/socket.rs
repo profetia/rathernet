@@ -3,6 +3,7 @@ use crate::{
     raudio::{AsioDevice, AudioInputStream, AudioOutputStream},
 };
 use anyhow::Result;
+use thiserror::Error;
 
 #[derive(Clone)]
 pub struct AcsmaIoConfig {
@@ -17,6 +18,12 @@ impl AcsmaIoConfig {
             stream_config,
         }
     }
+}
+
+#[derive(Debug, Error)]
+pub enum AcsmaIoError {
+    #[error("Link error after {0} retries")]
+    LinkError(usize),
 }
 
 pub struct AcsmaIoSocket {

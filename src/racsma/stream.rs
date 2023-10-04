@@ -1,13 +1,12 @@
 use super::{
     builtin::{ACK_LINK_ERROR_THRESHOLD, ACK_RECIEVE_TIMEOUT, PAYLOAD_BITS_LEN},
     frame::{AckFrame, DataFrame, Frame},
-    socket::AcsmaIoConfig,
+    socket::{AcsmaIoConfig, AcsmaIoError},
 };
 use crate::rather::{AtherInputStream, AtherOutputStream};
 use anyhow::Result;
 use bitvec::prelude::*;
 use std::collections::BTreeMap;
-use thiserror::Error;
 use tokio::time;
 use tokio_stream::StreamExt;
 
@@ -120,10 +119,4 @@ impl AcsmaIoStream {
 
         Ok(())
     }
-}
-
-#[derive(Debug, Error)]
-pub enum AcsmaIoError {
-    #[error("Link error after {0} retries")]
-    LinkError(usize),
 }
