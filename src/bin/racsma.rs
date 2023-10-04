@@ -55,6 +55,12 @@ enum Commands {
         /// Interprets the file as a text file consisting of 1s and 0s.
         #[clap(short, long, default_value = "false")]
         chars: bool,
+        /// The address that will be used to send the file.
+        #[clap(short, long, default_value = "0", value_parser = parse_address)]
+        address: usize,
+        /// The opponent address that will receive the file.
+        #[clap(short, long, default_value = "0", value_parser = parse_address)]
+        opponent: usize,
     },
     /// Read bits from the acsma and write them to a file.
     Read {
@@ -70,6 +76,12 @@ enum Commands {
         /// Number of bits to read.
         #[clap(short, long, default_value = "0")]
         num_bits: usize,
+        /// The address that will be used to recieve the bits.
+        #[clap(short, long, default_value = "0", value_parser = parse_address)]
+        address: usize,
+        /// The opponent address that will send the bits from.
+        #[clap(short, long, default_value = "0", value_parser = parse_address)]
+        opponent: usize,
     },
 }
 
@@ -80,10 +92,21 @@ enum CalibrateType {
     Duplex,
 }
 
+fn parse_address(src: &str) -> Result<usize> {
+    let num = src.parse::<usize>()?;
+    if num < 16 {
+        Ok(num)
+    } else {
+        Err(RacsmaError::InvalidAddress(num).into())
+    }
+}
+
 #[derive(Error, Debug)]
 enum RacsmaError {
-    #[error("Invalid character in file (expected 0 or 1, found `{0}`)")]
+    #[error("Invalid character in file (expect 0 or 1, found `{0}`)")]
     InvalidChar(char),
+    #[error("Invalid address (expect 0-15, found `{0}`)")]
+    InvalidAddress(usize),
 }
 
 #[tokio::main]
@@ -208,6 +231,8 @@ async fn main() -> Result<()> {
             file,
             device,
             chars,
+            address,
+            opponent,
         } => {
             let device = match device {
                 Some(name) => AsioDevice::try_from_name(&name)?,
@@ -222,7 +247,7 @@ async fn main() -> Result<()> {
             );
             let ather_config = AtherStreamConfig::new(10000, 15000, stream_config.clone());
 
-            let socket_config = AcsmaSocketConfig::new(0, 0, ather_config);
+            let socket_config = AcsmaSocketConfig::new(address, opponent, ather_config);
             let mut socket = AcsmaIoSocket::try_from_device(socket_config, &device)?;
 
             let mut bits = bitvec![];
@@ -247,6 +272,8 @@ async fn main() -> Result<()> {
             device,
             chars,
             num_bits,
+            address,
+            opponent,
         } => {
             let device = match device {
                 Some(name) => AsioDevice::try_from_name(&name)?,
@@ -262,7 +289,7 @@ async fn main() -> Result<()> {
 
             let ather_config = AtherStreamConfig::new(10000, 15000, stream_config.clone());
 
-            let socket_config = AcsmaSocketConfig::new(0, 0, ather_config);
+            let socket_config = AcsmaSocketConfig::new(address, opponent, ather_config);
             let mut socket = AcsmaIoSocket::try_from_device(socket_config, &device)?;
 
             let mut buf = bitvec![0; num_bits];
