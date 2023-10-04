@@ -83,6 +83,30 @@ enum Commands {
         #[clap(short, long, default_value = "0", value_parser = parse_address)]
         opponent: usize,
     },
+    /// Write bits from a file through the acsma while reading bits from the acsma
+    Duplex {
+        /// The path to the file to transmit.
+        source: PathBuf,
+        /// The path to the file to write the received bits to. If not specified, the bits will be
+        /// written to stdout.
+        #[clap(short, long)]
+        file: Option<PathBuf>,
+        /// The device used to transmit.
+        #[clap(short, long)]
+        device: Option<String>,
+        /// Interprets the file as a text file consisting of 1s and 0s.
+        #[clap(short, long, default_value = "false")]
+        chars: bool,
+        /// Number of bits to read.
+        #[clap(short, long, default_value = "0")]
+        num_bits: usize,
+        /// The address that will be used to send the file.
+        #[clap(short, long, default_value = "0", value_parser = parse_address)]
+        address: usize,
+        /// The opponent address that will receive the file.
+        #[clap(short, long, default_value = "0", value_parser = parse_address)]
+        opponent: usize,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
@@ -248,7 +272,7 @@ async fn main() -> Result<()> {
             let ather_config = AtherStreamConfig::new(10000, 15000, stream_config.clone());
 
             let socket_config = AcsmaSocketConfig::new(address, opponent, ather_config);
-            let mut socket = AcsmaIoSocket::try_from_device(socket_config, &device)?;
+            let (mut tx_socket, _) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
 
             let mut bits = bitvec![];
             if chars {
@@ -265,7 +289,7 @@ async fn main() -> Result<()> {
                 io::copy(&mut file, &mut bits)?;
             }
 
-            socket.write(0usize, &bits).await?;
+            tx_socket.write(&bits).await?;
         }
         Commands::Read {
             file,
@@ -290,10 +314,80 @@ async fn main() -> Result<()> {
             let ather_config = AtherStreamConfig::new(10000, 15000, stream_config.clone());
 
             let socket_config = AcsmaSocketConfig::new(address, opponent, ather_config);
-            let mut socket = AcsmaIoSocket::try_from_device(socket_config, &device)?;
+            let (_, mut rx_socket) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
 
             let mut buf = bitvec![0; num_bits];
-            socket.read(&mut buf).await?;
+            rx_socket.read(&mut buf).await?;
+
+            if let Some(file) = file {
+                if chars {
+                    fs::write(
+                        file,
+                        buf.into_iter()
+                            .map(|bit| if bit { '1' } else { '0' })
+                            .collect::<String>(),
+                    )
+                    .unwrap();
+                } else {
+                    let mut file = File::create(file)?;
+                    io::copy(&mut buf, &mut file)?;
+                }
+            } else {
+                eprintln!("No output file specified. Write the bits to stdout.");
+                println!(
+                    "{}",
+                    buf.into_iter()
+                        .map(|bit| if bit { '1' } else { '0' })
+                        .collect::<String>()
+                );
+            }
+        }
+        Commands::Duplex {
+            source,
+            file,
+            device,
+            chars,
+            num_bits,
+            address,
+            opponent,
+        } => {
+            let device = match device {
+                Some(name) => AsioDevice::try_from_name(&name)?,
+                None => AsioDevice::try_default()?,
+            };
+            let device_config = device.0.default_output_config()?;
+            let stream_config = SupportedStreamConfig::new(
+                1,
+                cpal::SampleRate(48000),
+                device_config.buffer_size().clone(),
+                device_config.sample_format(),
+            );
+            let ather_config = AtherStreamConfig::new(10000, 15000, stream_config.clone());
+
+            let socket_config = AcsmaSocketConfig::new(address, opponent, ather_config);
+            let (mut tx_socket, mut rx_socket) =
+                AcsmaIoSocket::try_from_device(socket_config, &device)?;
+
+            let mut bits = bitvec![];
+            if chars {
+                let source = fs::read_to_string(source)?;
+                for ch in source.chars() {
+                    match ch {
+                        '0' => bits.push(false),
+                        '1' => bits.push(true),
+                        _ => return Err(RacsmaError::InvalidChar(ch).into()),
+                    }
+                }
+            } else {
+                let mut file = File::open(source)?;
+                io::copy(&mut file, &mut bits)?;
+            }
+
+            let mut buf = bitvec![0; num_bits];
+            let (write_result, read_result) =
+                tokio::join!(tx_socket.write(&bits), rx_socket.read(&mut buf));
+            write_result?;
+            read_result?;
 
             if let Some(file) = file {
                 if chars {
