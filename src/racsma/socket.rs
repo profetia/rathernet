@@ -203,10 +203,8 @@ async fn socket_daemon(
                 write_ather.write(&bits).await?;
                 let _ = sender.send(());
             }
-            Err(TryRecvError::Disconnected) => {
-                if ack_tx.is_closed() && read_tx.is_closed() {
-                    break;
-                }
+            Err(TryRecvError::Disconnected) if ack_tx.is_closed() && read_tx.is_closed() => {
+                break;
             }
             _ => match time::timeout(SOCKET_FRAMING_TIMEOUT, read_ather.next()).await {
                 Ok(Some(bits)) => {
@@ -230,10 +228,7 @@ async fn socket_daemon(
                         }
                     }
                 }
-                Ok(None) => {
-                    break;
-                }
-                Err(_) => {}
+                _ => {}
             },
         }
     }
