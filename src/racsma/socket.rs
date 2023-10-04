@@ -206,8 +206,10 @@ async fn socket_daemon(
             Err(TryRecvError::Disconnected) if ack_tx.is_closed() && read_tx.is_closed() => {
                 break;
             }
-            _ => match time::timeout(SOCKET_FRAMING_TIMEOUT, read_ather.next()).await {
-                Ok(Some(bits)) => {
+            _ => {
+                if let Ok(Some(bits)) =
+                    time::timeout(SOCKET_FRAMING_TIMEOUT, read_ather.next()).await
+                {
                     println!("Got frame {}", bits.len());
                     if let Ok(frame) = AcsmaFrame::try_from(bits) {
                         let header = frame.header().clone();
@@ -228,8 +230,7 @@ async fn socket_daemon(
                         }
                     }
                 }
-                _ => {}
-            },
+            }
         }
     }
     Ok(())
