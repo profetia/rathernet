@@ -81,6 +81,26 @@ enum DeviceType {
     Duplex,
 }
 
+fn create_device(device: Option<String>) -> Result<AsioDevice> {
+    let device = match device {
+        Some(name) => AsioDevice::try_from_name(&name)?,
+        None => AsioDevice::try_default()?,
+    };
+    Ok(device)
+}
+
+fn create_stream_config(device: &AsioDevice) -> Result<SupportedStreamConfig> {
+    let device_config = device.0.default_output_config()?;
+    let stream_config = SupportedStreamConfig::new(
+        1,
+        cpal::SampleRate(48000),
+        device_config.buffer_size().clone(),
+        device_config.sample_format(),
+    );
+
+    Ok(stream_config)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = RaudioCli::parse();
@@ -90,18 +110,9 @@ async fn main() -> Result<()> {
             device,
             elapse,
         } => {
-            let device = match device {
-                Some(name) => AsioDevice::try_from_name(&name)?,
-                None => AsioDevice::try_default()?,
-            };
-            let default_config = device.0.default_output_config()?;
-            let config = SupportedStreamConfig::new(
-                1,
-                cpal::SampleRate(48000),
-                default_config.buffer_size().clone(),
-                default_config.sample_format(),
-            );
-            let stream = AudioOutputStream::try_from_device_config(&device, config)?;
+            let device = create_device(device)?;
+            let stream_config = create_stream_config(&device)?;
+            let stream = AudioOutputStream::try_from_device_config(&device, stream_config)?;
             let file = BufReader::new(File::open(source)?);
             let source = Decoder::new(file)?;
             if let Some(duration) = elapse {
@@ -117,23 +128,14 @@ async fn main() -> Result<()> {
             file,
             elapse,
         } => {
-            let device = match device {
-                Some(name) => AsioDevice::try_from_name(&name)?,
-                None => AsioDevice::try_default()?,
-            };
-            let default_config = device.0.default_output_config()?;
-            let config = SupportedStreamConfig::new(
-                1,
-                cpal::SampleRate(48000),
-                default_config.buffer_size().clone(),
-                default_config.sample_format(),
-            );
+            let device = create_device(device)?;
+            let stream_config = create_stream_config(&device)?;
             let mut stream =
-                AudioInputStream::<f32>::try_from_device_config(&device, config.clone())?;
+                AudioInputStream::<f32>::try_from_device_config(&device, stream_config.clone())?;
             let data = stream
                 .read_timeout(std::time::Duration::from_secs(elapse))
                 .await;
-            let track = AudioTrack::new(config, data);
+            let track = AudioTrack::new(stream_config, data);
             drop(stream);
             if let Some(path) = file {
                 track.write_to_file(path)?;
@@ -149,20 +151,12 @@ async fn main() -> Result<()> {
             file,
             elapse,
         } => {
-            let device = match device {
-                Some(name) => AsioDevice::try_from_name(&name)?,
-                None => AsioDevice::try_default()?,
-            };
-            let default_config = device.0.default_output_config()?;
-            let config = SupportedStreamConfig::new(
-                1,
-                cpal::SampleRate(48000),
-                default_config.buffer_size().clone(),
-                default_config.sample_format(),
-            );
+            let device = create_device(device)?;
+            let stream_config = create_stream_config(&device)?;
             let mut read_stream =
-                AudioInputStream::<f32>::try_from_device_config(&device, config.clone())?;
-            let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
+                AudioInputStream::<f32>::try_from_device_config(&device, stream_config.clone())?;
+            let write_stream =
+                AudioOutputStream::try_from_device_config(&device, stream_config.clone())?;
 
             let source = Decoder::new(BufReader::new(File::open(source)?))?;
 
@@ -171,7 +165,7 @@ async fn main() -> Result<()> {
                 read_stream.read_timeout(Duration::from_secs(elapse))
             );
 
-            let track = AudioTrack::new(config, data);
+            let track = AudioTrack::new(stream_config, data);
 
             drop(read_stream);
             drop(write_stream);

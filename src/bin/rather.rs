@@ -40,7 +40,7 @@ enum Commands {
     Write {
         /// The file to send.
         #[arg(required = true)]
-        file: PathBuf,
+        source: PathBuf,
         /// The device used to send the file.
         #[clap(short, long)]
         device: Option<String>,
@@ -85,21 +85,78 @@ enum RatherError {
     InvalidChar(char),
 }
 
-async fn calibrate(elapse: u64, device: Option<String>) -> Result<()> {
+fn create_device(device: Option<String>) -> Result<AsioDevice> {
     let device = match device {
         Some(name) => AsioDevice::try_from_name(&name)?,
         None => AsioDevice::try_default()?,
     };
-    let default_config = device.0.default_output_config()?;
-    let config = SupportedStreamConfig::new(
+    Ok(device)
+}
+
+fn create_stream_config(device: &AsioDevice) -> Result<SupportedStreamConfig> {
+    let device_config = device.0.default_output_config()?;
+    let stream_config = SupportedStreamConfig::new(
         1,
         cpal::SampleRate(48000),
-        default_config.buffer_size().clone(),
-        default_config.sample_format(),
+        device_config.buffer_size().clone(),
+        device_config.sample_format(),
     );
-    let stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
 
-    let sample_rate = config.sample_rate().0;
+    Ok(stream_config)
+}
+
+fn load_bits(source: PathBuf, chars: bool) -> Result<BitVec> {
+    let mut bits = bitvec![];
+    if chars {
+        let source = fs::read_to_string(source)?;
+        for ch in source.chars() {
+            match ch {
+                '0' => bits.push(false),
+                '1' => bits.push(true),
+                _ => return Err(RatherError::InvalidChar(ch).into()),
+            }
+        }
+    } else {
+        let mut file = File::open(source)?;
+        io::copy(&mut file, &mut bits)?;
+    }
+
+    Ok(bits)
+}
+
+fn dump_bits(mut buf: BitVec, file: Option<PathBuf>, chars: bool) -> Result<()> {
+    if let Some(file) = file {
+        if chars {
+            fs::write(
+                file,
+                buf.into_iter()
+                    .map(|bit| if bit { '1' } else { '0' })
+                    .collect::<String>(),
+            )
+            .unwrap();
+        } else {
+            let file = File::create(file)?;
+            io::copy(&mut buf, &mut &file)?;
+        }
+    } else {
+        eprintln!("No output file specified. Write the bits to stdout.");
+        println!(
+            "{}",
+            buf.into_iter()
+                .map(|bit| if bit { '1' } else { '0' })
+                .collect::<String>()
+        );
+    }
+
+    Ok(())
+}
+
+async fn calibrate(elapse: u64, device: Option<String>) -> Result<()> {
+    let device = create_device(device)?;
+    let stream_config = create_stream_config(&device)?;
+    let stream = AudioOutputStream::try_from_device_config(&device, stream_config.clone())?;
+
+    let sample_rate = stream_config.sample_rate().0;
     let signal_len = (sample_rate as u64 * elapse) as usize;
     let signal = (0..signal_len)
         .map(|item| {
@@ -108,7 +165,7 @@ async fn calibrate(elapse: u64, device: Option<String>) -> Result<()> {
         })
         .collect::<AudioSamples<f32>>();
 
-    let track = AudioTrack::new(config, signal);
+    let track = AudioTrack::new(stream_config, signal);
 
     stream.write(track).await?;
 
@@ -121,40 +178,17 @@ async fn main() -> Result<()> {
     match cli.subcmd {
         Commands::Calibrate { elapse, device } => calibrate(elapse, device).await?,
         Commands::Write {
-            file,
+            source,
             device,
             chars,
         } => {
-            let device = match device {
-                Some(name) => AsioDevice::try_from_name(&name)?,
-                None => AsioDevice::try_default()?,
-            };
-            let default_config = device.0.default_output_config()?;
-            let config = SupportedStreamConfig::new(
-                1,
-                cpal::SampleRate(48000),
-                default_config.buffer_size().clone(),
-                default_config.sample_format(),
-            );
-            let stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
-            let ather = AtherOutputStream::new(AtherStreamConfig::new(10000, 1000, config), stream);
+            let device = create_device(device)?;
+            let stream_config = create_stream_config(&device)?;
+            let stream = AudioOutputStream::try_from_device_config(&device, stream_config.clone())?;
+            let ather =
+                AtherOutputStream::new(AtherStreamConfig::new(10000, 1000, stream_config), stream);
 
-            let file = fs::read_to_string(file)?;
-            let mut bits = bitvec![];
-            if chars {
-                for ch in file.chars() {
-                    match ch {
-                        '0' => bits.push(false),
-                        '1' => bits.push(true),
-                        _ => return Err(RatherError::InvalidChar(ch).into()),
-                    }
-                }
-            } else {
-                for byte in file.bytes() {
-                    bits.extend(byte.view_bits::<Lsb0>());
-                }
-            }
-
+            let bits = load_bits(source, chars)?;
             ather.write(&bits).await?;
         }
         Commands::Read {
@@ -162,55 +196,13 @@ async fn main() -> Result<()> {
             device,
             chars,
         } => {
-            let device = match device {
-                Some(name) => AsioDevice::try_from_name(&name)?,
-                None => AsioDevice::try_default()?,
-            };
-            let default_config = device.0.default_output_config()?;
-            let config = SupportedStreamConfig::new(
-                1,
-                cpal::SampleRate(48000),
-                default_config.buffer_size().clone(),
-                default_config.sample_format(),
-            );
-            let stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
+            let device = create_device(device)?;
+            let stream_config = create_stream_config(&device)?;
+            let stream = AudioInputStream::try_from_device_config(&device, stream_config.clone())?;
             let mut ather =
-                AtherInputStream::new(AtherStreamConfig::new(10000, 1000, config), stream);
+                AtherInputStream::new(AtherStreamConfig::new(10000, 1000, stream_config), stream);
             let buf = ather.next().await.unwrap();
-
-            if let Some(file) = file {
-                if chars {
-                    fs::write(
-                        file,
-                        buf.into_iter()
-                            .map(|bit| if bit { '1' } else { '0' })
-                            .collect::<String>(),
-                    )
-                    .unwrap();
-                } else {
-                    fs::write(
-                        file,
-                        buf.chunks(8)
-                            .map(|chunk| {
-                                let mut byte = 0u8;
-                                for (index, bit) in chunk.iter().enumerate() {
-                                    byte |= (*bit as u8) << index;
-                                }
-                                byte
-                            })
-                            .collect::<Vec<_>>(),
-                    )
-                    .unwrap();
-                }
-            } else {
-                eprintln!("No output file specified. Write the bits to stdout.");
-                println!(
-                    "{}",
-                    buf.into_iter()
-                        .map(|bit| if bit { '1' } else { '0' })
-                        .collect::<String>()
-                );
-            }
+            dump_bits(buf, file, chars)?;
         }
         Commands::Duplex {
             source,
@@ -218,67 +210,28 @@ async fn main() -> Result<()> {
             file,
             chars,
         } => {
-            let device = match device {
-                Some(name) => AsioDevice::try_from_name(&name)?,
-                None => AsioDevice::try_default()?,
-            };
-            let default_config = device.0.default_output_config()?;
-            let config = SupportedStreamConfig::new(
-                1,
-                cpal::SampleRate(48000),
-                default_config.buffer_size().clone(),
-                default_config.sample_format(),
-            );
+            let device = create_device(device)?;
+            let stream_config = create_stream_config(&device)?;
 
-            let read_stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
+            let read_stream =
+                AudioInputStream::try_from_device_config(&device, stream_config.clone())?;
             let mut read_ather = AtherInputStream::new(
-                AtherStreamConfig::new(10000, 1000, config.clone()),
+                AtherStreamConfig::new(10000, 1000, stream_config.clone()),
                 read_stream,
             );
-            let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
-            let write_ather =
-                AtherOutputStream::new(AtherStreamConfig::new(10000, 1000, config), write_stream);
+            let write_stream =
+                AudioOutputStream::try_from_device_config(&device, stream_config.clone())?;
+            let write_ather = AtherOutputStream::new(
+                AtherStreamConfig::new(10000, 1000, stream_config),
+                write_stream,
+            );
 
-            let mut bits = bitvec![];
-            if chars {
-                let source = fs::read_to_string(source)?;
-                for ch in source.chars() {
-                    match ch {
-                        '0' => bits.push(false),
-                        '1' => bits.push(true),
-                        _ => return Err(RatherError::InvalidChar(ch).into()),
-                    }
-                }
-            } else {
-                let mut file = File::open(source)?;
-                io::copy(&mut file, &mut bits)?;
-            }
+            let bits = load_bits(source, chars)?;
 
             let (_, bits) = tokio::join!(write_ather.write(&bits), read_ather.next());
-            let mut buf = bits.unwrap();
+            let buf = bits.unwrap();
 
-            if let Some(file) = file {
-                if chars {
-                    fs::write(
-                        file,
-                        buf.into_iter()
-                            .map(|bit| if bit { '1' } else { '0' })
-                            .collect::<String>(),
-                    )
-                    .unwrap();
-                } else {
-                    let file = File::create(file)?;
-                    io::copy(&mut buf, &mut &file)?;
-                }
-            } else {
-                eprintln!("No output file specified. Write the bits to stdout.");
-                println!(
-                    "{}",
-                    buf.into_iter()
-                        .map(|bit| if bit { '1' } else { '0' })
-                        .collect::<String>()
-                );
-            }
+            dump_bits(buf, file, chars)?;
         }
     }
     Ok(())

@@ -48,7 +48,7 @@ enum Commands {
     Write {
         /// The file to send.
         #[arg(required = true)]
-        file: PathBuf,
+        source: PathBuf,
         /// The device used to send the file.
         #[clap(short, long)]
         device: Option<String>,
@@ -133,6 +133,72 @@ enum RacsmaError {
     InvalidAddress(usize),
 }
 
+fn create_device(device: Option<String>) -> Result<AsioDevice> {
+    let device = match device {
+        Some(name) => AsioDevice::try_from_name(&name)?,
+        None => AsioDevice::try_default()?,
+    };
+    Ok(device)
+}
+
+fn create_stream_config(device: &AsioDevice) -> Result<SupportedStreamConfig> {
+    let device_config = device.0.default_output_config()?;
+    let stream_config = SupportedStreamConfig::new(
+        1,
+        cpal::SampleRate(48000),
+        device_config.buffer_size().clone(),
+        device_config.sample_format(),
+    );
+
+    Ok(stream_config)
+}
+
+fn load_bits(source: PathBuf, chars: bool) -> Result<BitVec> {
+    let mut bits = bitvec![];
+    if chars {
+        let source = fs::read_to_string(source)?;
+        for ch in source.chars() {
+            match ch {
+                '0' => bits.push(false),
+                '1' => bits.push(true),
+                _ => return Err(RacsmaError::InvalidChar(ch).into()),
+            }
+        }
+    } else {
+        let mut file = File::open(source)?;
+        io::copy(&mut file, &mut bits)?;
+    }
+
+    Ok(bits)
+}
+
+fn dump_bits(mut buf: BitVec, file: Option<PathBuf>, chars: bool) -> Result<()> {
+    if let Some(file) = file {
+        if chars {
+            fs::write(
+                file,
+                buf.into_iter()
+                    .map(|bit| if bit { '1' } else { '0' })
+                    .collect::<String>(),
+            )
+            .unwrap();
+        } else {
+            let file = File::create(file)?;
+            io::copy(&mut buf, &mut &file)?;
+        }
+    } else {
+        eprintln!("No output file specified. Write the bits to stdout.");
+        println!(
+            "{}",
+            buf.into_iter()
+                .map(|bit| if bit { '1' } else { '0' })
+                .collect::<String>()
+        );
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = RacsmaCli::parse();
@@ -144,38 +210,18 @@ async fn main() -> Result<()> {
             chars,
             r#type,
         } => {
-            let device = match device {
-                Some(name) => AsioDevice::try_from_name(&name)?,
-                None => AsioDevice::try_default()?,
-            };
-            let default_config = device.0.default_output_config()?;
-            let config = SupportedStreamConfig::new(
-                1,
-                cpal::SampleRate(48000),
-                default_config.buffer_size().clone(),
-                default_config.sample_format(),
-            );
+            let device = create_device(device)?;
+            let stream_config = create_stream_config(&device)?;
 
-            let read_stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
-            let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
-            let config = AtherStreamConfig::new(10000, 15000, config.clone());
-            let mut read_ather = AtherInputStream::new(config.clone(), read_stream);
-            let write_ather = AtherOutputStream::new(config.clone(), write_stream);
+            let read_stream =
+                AudioInputStream::try_from_device_config(&device, stream_config.clone())?;
+            let write_stream =
+                AudioOutputStream::try_from_device_config(&device, stream_config.clone())?;
+            let ather_config = AtherStreamConfig::new(10000, 15000, stream_config.clone());
+            let mut read_ather = AtherInputStream::new(ather_config.clone(), read_stream);
+            let write_ather = AtherOutputStream::new(ather_config.clone(), write_stream);
 
-            let mut bits = bitvec![];
-            if chars {
-                let source = fs::read_to_string(source)?;
-                for ch in source.chars() {
-                    match ch {
-                        '0' => bits.push(false),
-                        '1' => bits.push(true),
-                        _ => return Err(RacsmaError::InvalidChar(ch).into()),
-                    }
-                }
-            } else {
-                let mut file = File::open(source)?;
-                io::copy(&mut file, &mut bits)?;
-            }
+            let bits = load_bits(source, chars)?;
 
             let write_future = async {
                 for chunk in bits.chunks(PAYLOAD_BITS_LEN) {
@@ -197,98 +243,33 @@ async fn main() -> Result<()> {
 
             match r#type {
                 CalibrateType::Write => {
-                    let mut buf = read_future.await;
-                    if let Some(file) = file {
-                        if chars {
-                            fs::write(
-                                file,
-                                buf.into_iter()
-                                    .map(|bit| if bit { '1' } else { '0' })
-                                    .collect::<String>(),
-                            )
-                            .unwrap();
-                        } else {
-                            let file = File::create(file)?;
-                            io::copy(&mut buf, &mut &file)?;
-                        }
-                    } else {
-                        eprintln!("No output file specified. Write the bits to stdout.");
-                        println!(
-                            "{}",
-                            buf.into_iter()
-                                .map(|bit| if bit { '1' } else { '0' })
-                                .collect::<String>()
-                        );
-                    }
+                    let buf = read_future.await;
+                    dump_bits(buf, file, chars)?;
                 }
                 CalibrateType::Read => {
                     write_future.await;
                 }
                 CalibrateType::Duplex => {
-                    let (_, mut buf) = tokio::join!(write_future, read_future);
-                    if let Some(file) = file {
-                        if chars {
-                            fs::write(
-                                file,
-                                buf.into_iter()
-                                    .map(|bit| if bit { '1' } else { '0' })
-                                    .collect::<String>(),
-                            )
-                            .unwrap();
-                        } else {
-                            let file = File::create(file)?;
-                            io::copy(&mut buf, &mut &file)?;
-                        }
-                    } else {
-                        eprintln!("No output file specified. Write the bits to stdout.");
-                        println!(
-                            "{}",
-                            buf.into_iter()
-                                .map(|bit| if bit { '1' } else { '0' })
-                                .collect::<String>()
-                        );
-                    }
+                    let (_, buf) = tokio::join!(write_future, read_future);
+                    dump_bits(buf, file, chars)?;
                 }
             }
         }
         Commands::Write {
-            file,
+            source,
             device,
             chars,
             address,
             opponent,
         } => {
-            let device = match device {
-                Some(name) => AsioDevice::try_from_name(&name)?,
-                None => AsioDevice::try_default()?,
-            };
-            let device_config = device.0.default_output_config()?;
-            let stream_config = SupportedStreamConfig::new(
-                1,
-                cpal::SampleRate(48000),
-                device_config.buffer_size().clone(),
-                device_config.sample_format(),
-            );
+            let device = create_device(device)?;
+            let stream_config = create_stream_config(&device)?;
             let ather_config = AtherStreamConfig::new(10000, 15000, stream_config.clone());
 
             let socket_config = AcsmaSocketConfig::new(address, opponent, ather_config);
             let (mut tx_socket, _) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
 
-            let mut bits = bitvec![];
-            if chars {
-                let source = fs::read_to_string(file)?;
-                for ch in source.chars() {
-                    match ch {
-                        '0' => bits.push(false),
-                        '1' => bits.push(true),
-                        _ => return Err(RacsmaError::InvalidChar(ch).into()),
-                    }
-                }
-            } else {
-                let mut file = File::open(file)?;
-                io::copy(&mut file, &mut bits)?;
-            }
-
+            let bits = load_bits(source, chars)?;
             tx_socket.write(&bits).await?;
         }
         Commands::Read {
@@ -299,17 +280,8 @@ async fn main() -> Result<()> {
             address,
             opponent,
         } => {
-            let device = match device {
-                Some(name) => AsioDevice::try_from_name(&name)?,
-                None => AsioDevice::try_default()?,
-            };
-            let device_config = device.0.default_output_config()?;
-            let stream_config = SupportedStreamConfig::new(
-                1,
-                cpal::SampleRate(48000),
-                device_config.buffer_size().clone(),
-                device_config.sample_format(),
-            );
+            let device = create_device(device)?;
+            let stream_config = create_stream_config(&device)?;
 
             let ather_config = AtherStreamConfig::new(10000, 15000, stream_config.clone());
 
@@ -319,28 +291,7 @@ async fn main() -> Result<()> {
             let mut buf = bitvec![0; num_bits];
             rx_socket.read(&mut buf).await?;
 
-            if let Some(file) = file {
-                if chars {
-                    fs::write(
-                        file,
-                        buf.into_iter()
-                            .map(|bit| if bit { '1' } else { '0' })
-                            .collect::<String>(),
-                    )
-                    .unwrap();
-                } else {
-                    let mut file = File::create(file)?;
-                    io::copy(&mut buf, &mut file)?;
-                }
-            } else {
-                eprintln!("No output file specified. Write the bits to stdout.");
-                println!(
-                    "{}",
-                    buf.into_iter()
-                        .map(|bit| if bit { '1' } else { '0' })
-                        .collect::<String>()
-                );
-            }
+            dump_bits(buf, file, chars)?;
         }
         Commands::Duplex {
             source,
@@ -351,37 +302,15 @@ async fn main() -> Result<()> {
             address,
             opponent,
         } => {
-            let device = match device {
-                Some(name) => AsioDevice::try_from_name(&name)?,
-                None => AsioDevice::try_default()?,
-            };
-            let device_config = device.0.default_output_config()?;
-            let stream_config = SupportedStreamConfig::new(
-                1,
-                cpal::SampleRate(48000),
-                device_config.buffer_size().clone(),
-                device_config.sample_format(),
-            );
+            let device = create_device(device)?;
+            let stream_config = create_stream_config(&device)?;
             let ather_config = AtherStreamConfig::new(10000, 15000, stream_config.clone());
 
             let socket_config = AcsmaSocketConfig::new(address, opponent, ather_config);
             let (mut tx_socket, mut rx_socket) =
                 AcsmaIoSocket::try_from_device(socket_config, &device)?;
 
-            let mut bits = bitvec![];
-            if chars {
-                let source = fs::read_to_string(source)?;
-                for ch in source.chars() {
-                    match ch {
-                        '0' => bits.push(false),
-                        '1' => bits.push(true),
-                        _ => return Err(RacsmaError::InvalidChar(ch).into()),
-                    }
-                }
-            } else {
-                let mut file = File::open(source)?;
-                io::copy(&mut file, &mut bits)?;
-            }
+            let bits = load_bits(source, chars)?;
 
             let mut buf = bitvec![0; num_bits];
             let (write_result, read_result) =
@@ -389,28 +318,7 @@ async fn main() -> Result<()> {
             write_result?;
             read_result?;
 
-            if let Some(file) = file {
-                if chars {
-                    fs::write(
-                        file,
-                        buf.into_iter()
-                            .map(|bit| if bit { '1' } else { '0' })
-                            .collect::<String>(),
-                    )
-                    .unwrap();
-                } else {
-                    let mut file = File::create(file)?;
-                    io::copy(&mut buf, &mut file)?;
-                }
-            } else {
-                eprintln!("No output file specified. Write the bits to stdout.");
-                println!(
-                    "{}",
-                    buf.into_iter()
-                        .map(|bit| if bit { '1' } else { '0' })
-                        .collect::<String>()
-                );
-            }
+            dump_bits(buf, file, chars)?;
         }
     }
     Ok(())
