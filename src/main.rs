@@ -27,17 +27,15 @@ async fn main() -> Result<()> {
     let read_stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
     let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
 
-    let monitor_stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
+    let mut monitor_stream = AudioInputStream::<f32>::try_from_device_config(&device, config.clone())?;
 
     let config = AtherStreamConfig::new(10000, 15000, config.clone());
     
     let mut read_ather = AtherInputStream::new(config.clone(), read_stream);
     let write_ather = AtherOutputStream::new(config.clone(), write_stream);
 
-    let mut monitor_ather = AtherInputStream::new(config.clone(), monitor_stream);
-
     let mut bits = bitvec![];
-    let mut file = File::open("./assets/acsma/INPUT.bin")?;
+    let mut file = File::open("./INPUT.bin")?;
     io::copy(&mut file, &mut bits)?;
 
     let write_future = async {
@@ -51,18 +49,13 @@ async fn main() -> Result<()> {
         buf    
     };
     let monitor_future = async {
-        let mut buf = bitvec![0; bits.len()];
-        read(&mut monitor_ather, &mut buf).await;
-        buf
+        monitor_stream.read().await
     };
 
-    let (_, mut read_buf, mut monitor_buf) = tokio::join!(write_future, read_future, monitor_future);
+    let (_, mut read_buf, _) = tokio::join!(write_future, read_future, monitor_future);
 
     let file = File::create("output.bin")?;
     io::copy(&mut read_buf, &mut &file)?;
-
-    let file = File::create("monitor.bin")?;
-    io::copy(&mut monitor_buf, &mut &file)?;
 
     Ok(())
 }
