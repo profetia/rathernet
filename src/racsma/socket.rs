@@ -54,7 +54,7 @@ impl AcsmaIoSocketReader {
         let (mut bucket, mut total_len) = (BTreeMap::new(), 0usize);
         while let Some(frame) = self.read_rx.recv().await {
             let header = frame.header().clone();
-            println!("Receive frame {}", header.r#type);
+            println!("Receive frame {}, total {}", header.seq, total_len);
             match frame {
                 NonAckFrame::Data(data) => {
                     let payload = data.payload().unwrap();
@@ -113,9 +113,12 @@ impl AcsmaIoSocketWriter {
                 println!("Sent frame {}", index);
 
                 let ack_future = async {
-                    if let Some(ack) = self.ack_rx.recv().await {
+                    while let Some(ack) = self.ack_rx.recv().await {
                         let header = ack.header();
-                        println!("Recieve ACK for index {}", header.seq);
+                        if header.seq == index {
+                            println!("Recieve ACK for index {}", header.seq);
+                            break;
+                        }
                     }
                 };
                 if time::timeout(ACK_RECIEVE_TIMEOUT, ack_future).await.is_ok() {
