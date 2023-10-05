@@ -201,17 +201,7 @@ async fn socket_daemon(
         match write_rx.try_recv() {
             Ok((frame, sender)) => {
                 let bits = Into::<BitVec>::into(frame);
-                write_monitor.resume();
-                while let Some(sample) = write_monitor.next().await {
-                    if sample
-                        .iter()
-                        .all(|&sample| sample.abs() < SOCKET_FREE_THRESHOLD)
-                    {
-                        break;
-                    }
-                }
-                write_ather.write(&bits).await?;
-                write_monitor.suspend();
+                write_frame(&write_ather, &mut write_monitor, bits).await?;
                 let _ = sender.send(());
             }
             Err(TryRecvError::Disconnected) if ack_tx.is_closed() && read_tx.is_closed() => {
@@ -233,7 +223,12 @@ async fn socket_daemon(
                                 AcsmaFrame::Data(data) => {
                                     let ack = AckFrame::new(header.src, header.dest, header.seq);
                                     println!("Sending ACK for index {}", header.seq);
-                                    write_ather.write(&Into::<BitVec>::into(ack)).await?;
+                                    write_frame(
+                                        &write_ather,
+                                        &mut write_monitor,
+                                        Into::<BitVec>::into(ack),
+                                    )
+                                    .await?;
                                     println!("Sent ACK for index {}", header.seq);
                                     let _ = read_tx.send(NonAckFrame::Data(data));
                                 }
@@ -244,5 +239,27 @@ async fn socket_daemon(
             }
         }
     }
+    Ok(())
+}
+
+async fn write_frame(
+    write_ather: &AtherOutputStream,
+    write_monitor: &mut AudioInputStream<f32>,
+    bits: BitVec,
+) -> Result<()> {
+    write_monitor.resume();
+    println!("Waiting for the channel to be free");
+    while let Some(sample) = write_monitor.next().await {
+        if sample
+            .iter()
+            .all(|&sample| sample.abs() < SOCKET_FREE_THRESHOLD)
+        {
+            break;
+        }
+        println!("Ooops, not free");
+    }
+    println!("The channel is free");
+    write_ather.write(&bits).await?;
+    write_monitor.suspend();
     Ok(())
 }
