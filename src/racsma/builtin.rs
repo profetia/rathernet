@@ -35,3 +35,5 @@ pub const ACK_RECIEVE_TIMEOUT: Duration = Duration::from_millis(100);
 
 pub const SOCKET_FRAMING_TIMEOUT: Duration = Duration::from_millis(100);
 pub const SOCKET_BACKOFF_TIMEOUT: Duration = Duration::from_millis(100);
+pub const SOCKET_FREE_THRESHOLD: f32 = 0.001;
+pub const SOCKET_COLLISSION_THRESHOLD: f32 = 0.5;
