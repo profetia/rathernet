@@ -1,12 +1,13 @@
 use super::{
     builtin::{
         ACK_LINK_ERROR_THRESHOLD, ACK_RECIEVE_TIMEOUT, PAYLOAD_BITS_LEN, SOCKET_FRAMING_TIMEOUT,
+        SOCKET_FREE_THRESHOLD,
     },
     frame::{AckFrame, AcsmaFrame, DataFrame, Frame, NonAckFrame},
 };
 use crate::{
     rather::{AtherInputStream, AtherOutputStream, AtherStreamConfig},
-    raudio::{AsioDevice, AudioInputStream, AudioOutputStream},
+    raudio::{AsioDevice, AudioInputStream, AudioOutputStream, ContinuousStream},
 };
 use anyhow::Result;
 use bitvec::prelude::*;
@@ -191,7 +192,7 @@ async fn socket_daemon(
     config: AcsmaSocketConfig,
     mut read_ather: AtherInputStream,
     write_ather: AtherOutputStream,
-    write_monitor: AudioInputStream<f32>,
+    mut write_monitor: AudioInputStream<f32>,
     read_tx: UnboundedSender<NonAckFrame>,
     ack_tx: UnboundedSender<AckFrame>,
     mut write_rx: UnboundedReceiver<(NonAckFrame, Sender<()>)>,
@@ -200,7 +201,17 @@ async fn socket_daemon(
         match write_rx.try_recv() {
             Ok((frame, sender)) => {
                 let bits = Into::<BitVec>::into(frame);
+                write_monitor.resume();
+                while let Some(sample) = write_monitor.next().await {
+                    if sample
+                        .iter()
+                        .all(|&sample| sample.abs() < SOCKET_FREE_THRESHOLD)
+                    {
+                        break;
+                    }
+                }
                 write_ather.write(&bits).await?;
+                write_monitor.suspend();
                 let _ = sender.send(());
             }
             Err(TryRecvError::Disconnected) if ack_tx.is_closed() && read_tx.is_closed() => {
