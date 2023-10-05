@@ -124,9 +124,10 @@ impl AcsmaIoSocketWriter {
                 if time::timeout(ACK_RECIEVE_TIMEOUT, ack_future).await.is_ok() {
                     break;
                 } else {
-                    println!("Timeout ACK for index");
+                    println!("Timeout ACK for index {}", index);
                     retry += 1;
                     if retry >= ACK_LINK_ERROR_THRESHOLD {
+                        println!("Link error:  ACK FAILED at {}", index);
                         return Err(AcsmaIoError::LinkError(retry).into());
                     }
                 }
@@ -246,7 +247,7 @@ async fn write_frame(
     bits: BitVec,
 ) -> Result<()> {
     write_monitor.resume();
-    println!("Waiting for the channel to be free");
+    // println!("Waiting for the channel to be free");
     while let Some(sample) = write_monitor.next().await {
         if sample
             .iter()
@@ -254,7 +255,7 @@ async fn write_frame(
         {
             break;
         }
-        println!("Ooops, not free");
+        // println!("Ooops, not free");
     }
     println!("The channel is free");
     write_ather.write(&bits).await?;
