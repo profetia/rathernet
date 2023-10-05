@@ -313,10 +313,7 @@ async fn main() -> Result<()> {
             let bits = load_bits(source, chars)?;
 
             let mut buf = bitvec![0; num_bits];
-            let (write_result, read_result) =
-                tokio::join!(tx_socket.write(&bits), rx_socket.read(&mut buf));
-            write_result?;
-            read_result?;
+            tokio::try_join!(tx_socket.write(&bits), rx_socket.read(&mut buf))?;
 
             dump_bits(buf, file, chars)?;
         }
