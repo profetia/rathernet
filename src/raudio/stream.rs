@@ -71,7 +71,7 @@ impl AudioOutputStream {
         let result = time::timeout(timeout, self.write(source)).await;
         match result {
             Ok(result) => result,
-            Err(err) => Err(err.into()),
+            Err(_) => Ok(())
         }
     }
 }
