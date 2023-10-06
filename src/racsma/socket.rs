@@ -212,6 +212,7 @@ async fn socket_daemon(
                 break;
             }
             _ => {
+                read_ather.resume();
                 if let Ok(Some(bits)) =
                     time::timeout(SOCKET_FRAMING_TIMEOUT, read_ather.next()).await
                 {
@@ -235,6 +236,7 @@ async fn socket_daemon(
                         }
                     }
                 }
+                read_ather.suspend();
             }
         }
     }
