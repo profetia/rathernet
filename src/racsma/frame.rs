@@ -2,7 +2,7 @@ use super::builtin::{
     ADDRESS_BITS_LEN, PARITY_ALGORITHM, PARITY_BITS_LEN, SEQ_BITS_LEN, TYPE_BITS_LEN,
 };
 use crate::rather::encode::{DecodeToBytes, DecodeToInt};
-use anyhow::Error;
+use anyhow::{Error, Result};
 use bitvec::prelude::*;
 use thiserror::Error;
 
@@ -236,7 +236,7 @@ impl TryFrom<BitVec> for AcsmaFrame {
         if header.r#type == FrameType::Ack.bits() {
             Ok(AcsmaFrame::Ack(AckFrame { header }))
         } else {
-            Ok(AcsmaFrame::NonAck(NonAckFrame::try_from(value)?))
+            Ok(AcsmaFrame::NonAck(NonAckFrame::try_from_bitvec_unchecked(value)?))
         }
     }
 }
@@ -262,19 +262,8 @@ pub enum NonAckFrame {
     Data(DataFrame),
 }
 
-impl From<NonAckFrame> for BitVec {
-    fn from(value: NonAckFrame) -> Self {
-        match value {
-            NonAckFrame::Data(data) => data.into(),
-        }
-    }
-}
-
-impl TryFrom<BitVec> for NonAckFrame {
-    type Error = Error;
-
-    fn try_from(value: BitVec) -> Result<Self, Self::Error> {
-        verify(&value)?;
+impl NonAckFrame {
+    fn try_from_bitvec_unchecked(value: BitVec) -> Result<Self> {
         let header = FrameHeader::from(
             &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
         );
@@ -293,6 +282,23 @@ impl TryFrom<BitVec> for NonAckFrame {
         } else {
             Err(FrameDecodeError::UnknownFrameType(header.r#type).into())
         }
+    }
+}
+
+impl From<NonAckFrame> for BitVec {
+    fn from(value: NonAckFrame) -> Self {
+        match value {
+            NonAckFrame::Data(data) => data.into(),
+        }
+    }
+}
+
+impl TryFrom<BitVec> for NonAckFrame {
+    type Error = Error;
+
+    fn try_from(value: BitVec) -> Result<Self, Self::Error> {
+        verify(&value)?;
+        Self::try_from_bitvec_unchecked(value)
     }
 }
 
