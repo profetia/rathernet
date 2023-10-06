@@ -1,5 +1,5 @@
 use super::{
-    builtin::{ACK_LINK_ERROR_THRESHOLD, ACK_RECIEVE_TIMEOUT, PAYLOAD_BITS_LEN},
+    builtin::{PAYLOAD_BITS_LEN, SOCKET_ACK_TIMEOUT, SOCKET_MAX_RESENDS},
     frame::{AckFrame, DataFrame, Frame},
     socket::AcsmaIoError,
 };
@@ -75,12 +75,12 @@ impl AcsmaIoStream {
                         }
                     }
                 };
-                if time::timeout(ACK_RECIEVE_TIMEOUT, ack_future).await.is_ok() {
+                if time::timeout(SOCKET_ACK_TIMEOUT, ack_future).await.is_ok() {
                     break;
                 } else {
                     println!("Timeout ACK for index");
                     retry += 1;
-                    if retry >= ACK_LINK_ERROR_THRESHOLD {
+                    if retry >= SOCKET_MAX_RESENDS {
                         return Err(AcsmaIoError::LinkError(retry).into());
                     }
                 }

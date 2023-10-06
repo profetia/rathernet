@@ -1,8 +1,7 @@
 use super::{
     builtin::{
-        ACK_LINK_ERROR_THRESHOLD, ACK_RECIEVE_TIMEOUT, PAYLOAD_BITS_LEN,
-        SOCKET_BACKOFF_ERROR_THRESHOLD, SOCKET_BACKOFF_WAIT_THRESHOLD, SOCKET_FREE_THRESHOLD,
-        SOCKET_RECIEVE_TIMEOUT, SOCKET_SLOT_TIMEOUT,
+        PAYLOAD_BITS_LEN, SOCKET_ACK_TIMEOUT, SOCKET_FREE_THRESHOLD, SOCKET_MAX_BACKOFF,
+        SOCKET_MAX_RESENDS, SOCKET_RECIEVE_TIMEOUT, SOCKET_SLOT_TIMEOUT,
     },
     frame::{AckFrame, AcsmaFrame, DataFrame, Frame, NonAckFrame},
 };
@@ -13,7 +12,10 @@ use crate::{
 use anyhow::Result;
 use bitvec::prelude::*;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 use thiserror::Error;
 use tokio::{
     sync::{
@@ -47,11 +49,11 @@ pub enum AcsmaIoError {
     LinkError(usize),
 }
 
-pub struct AcsmaIoSocketReader {
+pub struct AcsmaSocketReader {
     read_rx: UnboundedReceiver<NonAckFrame>,
 }
 
-impl AcsmaIoSocketReader {
+impl AcsmaSocketReader {
     pub async fn read(&mut self, buf: &mut BitSlice) -> Result<()> {
         let (mut bucket, mut total_len) = (BTreeMap::new(), 0usize);
         while let Some(frame) = self.read_rx.recv().await {
@@ -85,13 +87,12 @@ impl AcsmaIoSocketReader {
     }
 }
 
-pub struct AcsmaIoSocketWriter {
+pub struct AcsmaSocketWriter {
     config: AcsmaSocketConfig,
-    ack_rx: UnboundedReceiver<AckFrame>,
-    write_tx: UnboundedSender<AcsmaIoSocketWriteTask>,
+    write_tx: UnboundedSender<AcsmaSocketWriteTask>,
 }
 
-impl AcsmaIoSocketWriter {
+impl AcsmaSocketWriter {
     pub async fn write(&mut self, bits: &BitSlice) -> Result<()> {
         let frames = bits
             .chunks(PAYLOAD_BITS_LEN)
@@ -106,41 +107,18 @@ impl AcsmaIoSocketWriter {
             });
 
         for (index, frame) in frames.enumerate() {
-            let mut retry = 0usize;
-            loop {
-                println!("Sending frame {}", index);
-                let (tx, rx) = oneshot::channel();
-                self.write_tx.send((NonAckFrame::Data(frame.clone()), tx))?;
-                rx.await??;
-                println!("Sent frame {}", index);
-
-                let ack_future = async {
-                    while let Some(ack) = self.ack_rx.recv().await {
-                        let header = ack.header();
-                        if header.seq == index {
-                            println!("Recieve ACK for index {}", header.seq);
-                            break;
-                        }
-                    }
-                };
-                if time::timeout(ACK_RECIEVE_TIMEOUT, ack_future).await.is_ok() {
-                    break;
-                } else {
-                    println!("Timeout ACK for index {}", index);
-                    retry += 1;
-                    if retry >= ACK_LINK_ERROR_THRESHOLD {
-                        println!("Link error:  ACK FAILED at {}", index);
-                        return Err(AcsmaIoError::LinkError(retry).into());
-                    }
-                }
-            }
+            println!("Sending frame {}", index);
+            let (tx, rx) = oneshot::channel();
+            self.write_tx.send((NonAckFrame::Data(frame.clone()), tx))?;
+            rx.await??;
+            println!("Sent frame {}", index);
         }
 
         Ok(())
     }
 }
 
-type AcsmaIoSocketWriteTask = (NonAckFrame, Sender<Result<()>>);
+type AcsmaSocketWriteTask = (NonAckFrame, Sender<Result<()>>);
 
 pub struct AcsmaIoSocket;
 
@@ -148,9 +126,8 @@ impl AcsmaIoSocket {
     pub fn try_from_device(
         config: AcsmaSocketConfig,
         device: &AsioDevice,
-    ) -> Result<(AcsmaIoSocketWriter, AcsmaIoSocketReader)> {
+    ) -> Result<(AcsmaSocketWriter, AcsmaSocketReader)> {
         let (read_tx, read_rx) = mpsc::unbounded_channel();
-        let (ack_tx, ack_rx) = mpsc::unbounded_channel();
         let (write_tx, write_rx) = mpsc::unbounded_channel();
 
         tokio::spawn(socket_daemon(
@@ -174,23 +151,18 @@ impl AcsmaIoSocket {
                 config.ather_config.stream_config.clone(),
             )?,
             read_tx,
-            ack_tx,
             write_rx,
         ));
 
         Ok((
-            AcsmaIoSocketWriter {
-                config,
-                ack_rx,
-                write_tx,
-            },
-            AcsmaIoSocketReader { read_rx },
+            AcsmaSocketWriter { config, write_tx },
+            AcsmaSocketReader { read_rx },
         ))
     }
 
     pub fn try_default(
         config: AcsmaSocketConfig,
-    ) -> Result<(AcsmaIoSocketWriter, AcsmaIoSocketReader)> {
+    ) -> Result<(AcsmaSocketWriter, AcsmaSocketReader)> {
         let device = AsioDevice::try_default()?;
         Self::try_from_device(config, &device)
     }
@@ -202,91 +174,163 @@ async fn socket_daemon(
     write_ather: AtherOutputStream,
     mut write_monitor: AudioInputStream<f32>,
     read_tx: UnboundedSender<NonAckFrame>,
-    ack_tx: UnboundedSender<AckFrame>,
-    mut write_rx: UnboundedReceiver<AcsmaIoSocketWriteTask>,
+    mut write_rx: UnboundedReceiver<AcsmaSocketWriteTask>,
 ) -> Result<()> {
     let mut rng = SmallRng::from_entropy();
+    let mut write_state: Option<AcsmaSocketWriteState> = None;
     loop {
-        match write_rx.try_recv() {
-            Ok(task) => {
-                write_frame(&mut rng, &write_ather, &mut write_monitor, task).await?;
-            }
-            Err(TryRecvError::Disconnected) if ack_tx.is_closed() && read_tx.is_closed() => {
-                break;
-            }
-            _ => {
-                read_ather.resume();
-                if let Ok(Some(bits)) =
-                    time::timeout(SOCKET_RECIEVE_TIMEOUT, read_ather.next()).await
-                {
-                    println!("Got frame {}", bits.len());
-                    if let Ok(frame) = AcsmaFrame::try_from(bits) {
-                        let header = frame.header().clone();
-                        println!("Recieve frame with index {}", header.seq);
-                        if header.src == config.opponent && header.dest == config.address {
-                            match frame {
-                                AcsmaFrame::Ack(ack) => {
-                                    let _ = ack_tx.send(ack);
-                                }
-                                AcsmaFrame::NonAck(data) => {
-                                    let ack = AckFrame::new(header.src, header.dest, header.seq);
-                                    println!("Sending ACK for index {}", header.seq);
-                                    write_ather.write(&Into::<BitVec>::into(ack)).await?;
-                                    println!("Sent ACK for index {}", header.seq);
-                                    let _ = read_tx.send(data);
+        if let Ok(Some(bits)) = time::timeout(SOCKET_RECIEVE_TIMEOUT, read_ather.next()).await {
+            println!("Got frame {}", bits.len());
+            if let Ok(frame) = AcsmaFrame::try_from(bits) {
+                let header = frame.header().clone();
+                println!("Recieve frame with index {}", header.seq);
+                if header.src == config.opponent && header.dest == config.address {
+                    match frame {
+                        AcsmaFrame::Ack(ack) => {
+                            if let Some(state) = &write_state {
+                                let header = ack.header();
+                                if header.seq == state.task.0.header().seq {
+                                    let state = write_state.take().unwrap();
+                                    let (_, sender) = state.task;
+                                    let _ = sender.send(Ok(()));
                                 }
                             }
                         }
+                        AcsmaFrame::NonAck(data) => {
+                            let ack = AckFrame::new(header.src, header.dest, header.seq);
+                            println!("Sending ACK for index {}", header.seq);
+                            write_ather.write(&Into::<BitVec>::into(ack)).await?;
+                            println!("Sent ACK for index {}", header.seq);
+                            let _ = read_tx.send(data);
+                        }
                     }
                 }
-                read_ather.suspend();
+            }
+        } else if let Some(state) = &mut write_state {
+            if state.timer.is_expired() {
+                if state.timer.is_timeout() {
+                    state.timer = AcsmaSocketWriteTimer::backoff(&mut rng, 0);
+                } else if !is_channel_free(&mut write_monitor).await {
+                    let result = state.timer.retry(&mut rng);
+                    if result.is_err() {
+                        let state = write_state.take().unwrap();
+                        let (_, sender) = state.task;
+                        let _ = sender.send(result);
+                    }
+                } else if state.resends > SOCKET_MAX_RESENDS {
+                    let state = write_state.take().unwrap();
+                    let (_, sender) = state.task;
+                    let _ = sender.send(Err(AcsmaIoError::LinkError(state.resends).into()));
+                } else {
+                    let frame = state.task.0.clone();
+                    write_ather.write(&Into::<BitVec>::into(frame)).await?;
+                    state.resends += 1;
+                    state.timer = AcsmaSocketWriteTimer::timeout();
+                }
+            }
+        } else if write_state.is_none() {
+            let result = write_rx.try_recv();
+            if let Ok(task) = result {
+                if !is_channel_free(&mut write_monitor).await {
+                    write_state = Some(AcsmaSocketWriteState {
+                        task,
+                        resends: 0,
+                        timer: AcsmaSocketWriteTimer::backoff(&mut rng, 0),
+                    });
+                } else {
+                    let frame = task.0.clone();
+                    write_ather.write(&Into::<BitVec>::into(frame)).await?;
+                    write_state = Some(AcsmaSocketWriteState {
+                        task,
+                        resends: 0,
+                        timer: AcsmaSocketWriteTimer::timeout(),
+                    });
+                }
+            } else if let Err(TryRecvError::Disconnected) = result {
+                if read_tx.is_closed() {
+                    break;
+                }
             }
         }
     }
     Ok(())
 }
 
-async fn write_frame(
-    rng: &mut SmallRng,
-    write_ather: &AtherOutputStream,
-    write_monitor: &mut AudioInputStream<f32>,
-    (frame, sender): AcsmaIoSocketWriteTask,
-) -> Result<()> {
-    let bits = Into::<BitVec>::into(frame);
-    // println!("Waiting for the channel to be free");
-    let mut m = 0;
-    loop {
-        write_monitor.resume();
-        if let Some(sample) = write_monitor.next().await {
-            if sample
-                .iter()
-                .all(|&sample| sample.abs() < SOCKET_FREE_THRESHOLD)
-            {
-                break;
-            } else {
-                // println!("Ooops, not free");
-                write_monitor.suspend();
-                m += 1;
-                if m >= SOCKET_BACKOFF_ERROR_THRESHOLD {
-                    let _ = sender.send(Err(AcsmaIoError::LinkError(m).into()));
-                    return Ok(());
-                } else {
-                    let upper_bound = if m > SOCKET_BACKOFF_WAIT_THRESHOLD {
-                        1024
-                    } else {
-                        1 << (m - 1)
-                    };
-                    let k = rng.gen_range(0..=upper_bound);
-                    // println!("Waiting for {} slots", k);
-                    time::sleep(SOCKET_SLOT_TIMEOUT * k).await;
-                }
-            }
+async fn is_channel_free(write_monitor: &mut AudioInputStream<f32>) -> bool {
+    write_monitor.resume();
+    if let Some(sample) = write_monitor.next().await {
+        if sample
+            .iter()
+            .all(|&sample| sample.abs() < SOCKET_FREE_THRESHOLD)
+        {
+            write_monitor.suspend();
+            return true;
+        }
+    }
+    write_monitor.suspend();
+    false
+}
+
+struct AcsmaSocketWriteState {
+    task: AcsmaSocketWriteTask,
+    resends: usize,
+    timer: AcsmaSocketWriteTimer,
+}
+
+struct AcsmaSocketWriteTimer {
+    start: Instant,
+    r#type: AcsmaSocketWriteTimerType,
+}
+
+enum AcsmaSocketWriteTimerType {
+    Timeout,
+    Backoff(usize, Duration),
+}
+
+fn generate_backoff(rng: &mut SmallRng, factor: usize) -> Duration {
+    rng.gen_range(0..=(1 << (factor - 1))) * SOCKET_SLOT_TIMEOUT
+}
+
+impl AcsmaSocketWriteTimer {
+    fn timeout() -> Self {
+        Self {
+            start: Instant::now(),
+            r#type: AcsmaSocketWriteTimerType::Timeout,
         }
     }
 
-    println!("The channel is free");
-    write_ather.write(&bits).await?;
-    let _ = sender.send(Ok(()));
+    fn backoff(rng: &mut SmallRng, retry: usize) -> Self {
+        let duration = generate_backoff(rng, retry);
+        Self {
+            start: Instant::now(),
+            r#type: AcsmaSocketWriteTimerType::Backoff(retry, duration),
+        }
+    }
+}
 
-    Ok(())
+impl AcsmaSocketWriteTimer {
+    fn is_expired(&self) -> bool {
+        match self.r#type {
+            AcsmaSocketWriteTimerType::Timeout => self.start.elapsed() > SOCKET_ACK_TIMEOUT,
+            AcsmaSocketWriteTimerType::Backoff(_, duration) => self.start.elapsed() > duration,
+        }
+    }
+
+    fn retry(&mut self, rng: &mut SmallRng) -> Result<()> {
+        match &mut self.r#type {
+            AcsmaSocketWriteTimerType::Timeout => {}
+            AcsmaSocketWriteTimerType::Backoff(retry, duration) => {
+                *retry += 1;
+                if *retry > SOCKET_MAX_BACKOFF {
+                    return Err(AcsmaIoError::LinkError(*retry).into());
+                }
+                *duration = generate_backoff(rng, *retry);
+            }
+        }
+        Ok(())
+    }
+
+    fn is_timeout(&self) -> bool {
+        matches!(self.r#type, AcsmaSocketWriteTimerType::Timeout)
+    }
 }
