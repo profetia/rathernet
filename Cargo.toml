@@ -14,6 +14,7 @@ crc = "3.0.1"
 crossbeam = "0.8.2"
 hound = "3.5.0"
 num = "0.4.1"
+rand = { version = "0.8.5", features = ["small_rng"] }
 realfft = "3.3.0"
 reed-solomon-erasure = { version = "6.0.0", features = ["simd-accel"] }
 rodio = "0.17.1"
