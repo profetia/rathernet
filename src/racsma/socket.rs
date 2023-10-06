@@ -1,7 +1,8 @@
 use super::{
     builtin::{
-        ACK_LINK_ERROR_THRESHOLD, ACK_RECIEVE_TIMEOUT, PAYLOAD_BITS_LEN, SOCKET_FRAMING_TIMEOUT,
-        SOCKET_FREE_THRESHOLD,
+        ACK_LINK_ERROR_THRESHOLD, ACK_RECIEVE_TIMEOUT, PAYLOAD_BITS_LEN,
+        SOCKET_BACKOFF_ERROR_THRESHOLD, SOCKET_BACKOFF_WAIT_THRESHOLD, SOCKET_FREE_THRESHOLD,
+        SOCKET_RECIEVE_TIMEOUT, SOCKET_SLOT_TIMEOUT,
     },
     frame::{AckFrame, AcsmaFrame, DataFrame, Frame, NonAckFrame},
 };
@@ -11,6 +12,7 @@ use crate::{
 };
 use anyhow::Result;
 use bitvec::prelude::*;
+use rand::{rngs::SmallRng, Rng, SeedableRng};
 use std::collections::BTreeMap;
 use thiserror::Error;
 use tokio::{
@@ -86,7 +88,7 @@ impl AcsmaIoSocketReader {
 pub struct AcsmaIoSocketWriter {
     config: AcsmaSocketConfig,
     ack_rx: UnboundedReceiver<AckFrame>,
-    write_tx: UnboundedSender<(NonAckFrame, Sender<()>)>,
+    write_tx: UnboundedSender<AcsmaIoSocketWriteTask>,
 }
 
 impl AcsmaIoSocketWriter {
@@ -109,7 +111,7 @@ impl AcsmaIoSocketWriter {
                 println!("Sending frame {}", index);
                 let (tx, rx) = oneshot::channel();
                 self.write_tx.send((NonAckFrame::Data(frame.clone()), tx))?;
-                rx.await?;
+                rx.await??;
                 println!("Sent frame {}", index);
 
                 let ack_future = async {
@@ -137,6 +139,8 @@ impl AcsmaIoSocketWriter {
         Ok(())
     }
 }
+
+type AcsmaIoSocketWriteTask = (NonAckFrame, Sender<Result<()>>);
 
 pub struct AcsmaIoSocket;
 
@@ -199,14 +203,13 @@ async fn socket_daemon(
     mut write_monitor: AudioInputStream<f32>,
     read_tx: UnboundedSender<NonAckFrame>,
     ack_tx: UnboundedSender<AckFrame>,
-    mut write_rx: UnboundedReceiver<(NonAckFrame, Sender<()>)>,
+    mut write_rx: UnboundedReceiver<AcsmaIoSocketWriteTask>,
 ) -> Result<()> {
+    let mut rng = SmallRng::from_entropy();
     loop {
         match write_rx.try_recv() {
-            Ok((frame, sender)) => {
-                let bits = Into::<BitVec>::into(frame);
-                write_frame(&write_ather, &mut write_monitor, bits).await?;
-                let _ = sender.send(());
+            Ok(task) => {
+                write_frame(&mut rng, &write_ather, &mut write_monitor, task).await?;
             }
             Err(TryRecvError::Disconnected) if ack_tx.is_closed() && read_tx.is_closed() => {
                 break;
@@ -214,7 +217,7 @@ async fn socket_daemon(
             _ => {
                 read_ather.resume();
                 if let Ok(Some(bits)) =
-                    time::timeout(SOCKET_FRAMING_TIMEOUT, read_ather.next()).await
+                    time::timeout(SOCKET_RECIEVE_TIMEOUT, read_ather.next()).await
                 {
                     println!("Got frame {}", bits.len());
                     if let Ok(frame) = AcsmaFrame::try_from(bits) {
@@ -244,23 +247,46 @@ async fn socket_daemon(
 }
 
 async fn write_frame(
+    rng: &mut SmallRng,
     write_ather: &AtherOutputStream,
     write_monitor: &mut AudioInputStream<f32>,
-    bits: BitVec,
+    (frame, sender): AcsmaIoSocketWriteTask,
 ) -> Result<()> {
-    write_monitor.resume();
+    let bits = Into::<BitVec>::into(frame);
     // println!("Waiting for the channel to be free");
-    while let Some(sample) = write_monitor.next().await {
-        if sample
-            .iter()
-            .all(|&sample| sample.abs() < SOCKET_FREE_THRESHOLD)
-        {
-            break;
+    let mut m = 0;
+    loop {
+        write_monitor.resume();
+        if let Some(sample) = write_monitor.next().await {
+            if sample
+                .iter()
+                .all(|&sample| sample.abs() < SOCKET_FREE_THRESHOLD)
+            {
+                break;
+            } else {
+                // println!("Ooops, not free");
+                write_monitor.suspend();
+                m += 1;
+                if m >= SOCKET_BACKOFF_ERROR_THRESHOLD {
+                    let _ = sender.send(Err(AcsmaIoError::LinkError(m).into()));
+                    return Ok(());
+                } else {
+                    let upper_bound = if m > SOCKET_BACKOFF_WAIT_THRESHOLD {
+                        1024
+                    } else {
+                        1 << (m - 1)
+                    };
+                    let k = rng.gen_range(0..=upper_bound);
+                    // println!("Waiting for {} slots", k);
+                    time::sleep(SOCKET_SLOT_TIMEOUT * k).await;
+                }
+            }
         }
-        // println!("Ooops, not free");
     }
+
     println!("The channel is free");
     write_ather.write(&bits).await?;
-    write_monitor.suspend();
+    let _ = sender.send(Ok(()));
+
     Ok(())
 }
