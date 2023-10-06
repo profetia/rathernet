@@ -33,7 +33,10 @@ pub const PAYLOAD_BITS_LEN: usize = ATHER_PAYLOAD_BITS_LEN
 pub const ACK_LINK_ERROR_THRESHOLD: usize = 50;
 pub const ACK_RECIEVE_TIMEOUT: Duration = Duration::from_millis(100);
 
-pub const SOCKET_FRAMING_TIMEOUT: Duration = Duration::from_millis(100);
-pub const SOCKET_BACKOFF_TIMEOUT: Duration = Duration::from_millis(100);
+pub const SOCKET_SLOT_TIMEOUT: Duration = Duration::from_millis(100);
+pub const SOCKET_RECIEVE_TIMEOUT: Duration = Duration::from_millis(100);
+
+pub const SOCKET_BACKOFF_WAIT_THRESHOLD: usize = 11;
+pub const SOCKET_BACKOFF_ERROR_THRESHOLD: usize = 16;
 pub const SOCKET_FREE_THRESHOLD: f32 = 0.001;
 pub const SOCKET_COLLISSION_THRESHOLD: f32 = 0.5;
