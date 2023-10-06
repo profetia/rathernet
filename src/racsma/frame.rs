@@ -210,14 +210,14 @@ impl TryFrom<BitVec> for AckFrame {
 }
 
 pub enum AcsmaFrame {
-    Data(DataFrame),
+    NonAck(NonAckFrame),
     Ack(AckFrame),
 }
 
 impl From<AcsmaFrame> for BitVec {
     fn from(value: AcsmaFrame) -> Self {
         match value {
-            AcsmaFrame::Data(data) => data.into(),
+            AcsmaFrame::NonAck(data) => data.into(),
             AcsmaFrame::Ack(ack) => ack.into(),
         }
     }
@@ -232,15 +232,10 @@ impl TryFrom<BitVec> for AcsmaFrame {
             &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
         );
 
-        if header.r#type == FrameType::Data.bits() {
-            let payload = value[ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN
-                ..value.len() - PARITY_BITS_LEN]
-                .to_owned();
-            Ok(AcsmaFrame::Data(DataFrame { header, payload }))
-        } else if header.r#type == FrameType::Ack.bits() {
+        if header.r#type == FrameType::Ack.bits() {
             Ok(AcsmaFrame::Ack(AckFrame { header }))
         } else {
-            Err(FrameDecodeError::UnknownFrameType(header.r#type).into())
+            Ok(AcsmaFrame::NonAck(NonAckFrame::try_from(value)?))
         }
     }
 }
@@ -248,14 +243,14 @@ impl TryFrom<BitVec> for AcsmaFrame {
 impl Frame for AcsmaFrame {
     fn header(&self) -> &FrameHeader {
         match self {
-            AcsmaFrame::Data(data) => data.header(),
+            AcsmaFrame::NonAck(data) => data.header(),
             AcsmaFrame::Ack(ack) => ack.header(),
         }
     }
 
     fn payload(&self) -> Option<&BitSlice> {
         match self {
-            AcsmaFrame::Data(data) => data.payload(),
+            AcsmaFrame::NonAck(data) => data.payload(),
             AcsmaFrame::Ack(ack) => ack.payload(),
         }
     }
