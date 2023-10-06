@@ -224,12 +224,12 @@ async fn socket_daemon(
                                 AcsmaFrame::Ack(ack) => {
                                     let _ = ack_tx.send(ack);
                                 }
-                                AcsmaFrame::Data(data) => {
+                                AcsmaFrame::NonAck(data) => {
                                     let ack = AckFrame::new(header.src, header.dest, header.seq);
                                     println!("Sending ACK for index {}", header.seq);
                                     write_ather.write(&Into::<BitVec>::into(ack)).await?;
                                     println!("Sent ACK for index {}", header.seq);
-                                    let _ = read_tx.send(NonAckFrame::Data(data));
+                                    let _ = read_tx.send(data);
                                 }
                             }
                         }
