@@ -209,6 +209,7 @@ impl TryFrom<BitVec> for AckFrame {
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum AcsmaFrame {
     NonAck(NonAckFrame),
     Ack(AckFrame),
@@ -256,6 +257,7 @@ impl Frame for AcsmaFrame {
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum NonAckFrame {
     Data(DataFrame),
 }
