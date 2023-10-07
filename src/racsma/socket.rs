@@ -227,10 +227,10 @@ async fn socket_daemon(
                         }
                     }
                 } else {
-                    println!("Recieve frame with invalid address");
+                    println!("Recieve frame but not for me");
                 }
             } else {
-                println!("Recieve invalid frame");
+                println!("Recieve frame but checksum failed");
             }
         }
 
@@ -335,7 +335,7 @@ enum AcsmaSocketWriteTimerType {
 }
 
 fn generate_backoff(rng: &mut SmallRng, factor: usize) -> Duration {
-    let k = rng.gen_range(0..=(1 << factor));
+    let k = rng.gen_range(0..=(1 << factor) as u32);
     println!("Set timer to {} slots by {}", k, factor);
     k * SOCKET_SLOT_TIMEOUT
 }
