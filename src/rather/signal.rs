@@ -214,6 +214,25 @@ impl BandPass for Vec<f32> {
     }
 }
 
+pub trait Energy
+where
+    Self: AsRef<[f32]>,
+{
+    fn energy(&self, sample_rate: u32) -> f32;
+}
+    
+impl Energy for Box<[f32]> {
+    fn energy(&self, sample_rate: u32) -> f32 {
+        self.iter().fold(0., |acc, item| acc + item * item) / sample_rate as f32
+    }
+}
+
+impl Energy for Vec<f32> {
+    fn energy(&self, sample_rate: u32) -> f32 {
+        self.iter().fold(0., |acc, item| acc + item * item) / sample_rate as f32
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
