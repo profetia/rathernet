@@ -1,0 +1,14 @@
+{
+    "terminal.integrated.profiles.windows": {
+        "Rathernet PowerShell": {
+            "source": "PowerShell",
+            "icon": "terminal-powershell",
+            "args": [
+                "-noexit",
+                "-file",
+                "./env.local.ps1"
+            ]
+        },
+    },
+    "terminal.integrated.defaultProfile.windows": "Rathernet PowerShell",
+}
