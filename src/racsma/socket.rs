@@ -6,7 +6,7 @@ use super::{
     frame::{AckFrame, AcsmaFrame, DataFrame, Frame, NonAckFrame},
 };
 use crate::{
-    rather::{AtherInputStream, AtherOutputStream, AtherStreamConfig, signal::Energy},
+    rather::{signal::Energy, AtherInputStream, AtherOutputStream, AtherStreamConfig},
     raudio::{AsioDevice, AudioInputStream, AudioOutputStream, ContinuousStream},
 };
 use anyhow::Result;
@@ -177,22 +177,13 @@ async fn socket_daemon(
     mut write_rx: UnboundedReceiver<AcsmaSocketWriteTask>,
 ) -> Result<()> {
     let mut rng = SmallRng::from_entropy();
-    let mut write_state: Option<AcsmaSocketWriteState> = None;
+    let mut write_state: Option<AcsmaSocketWriteTimer> = None;
     loop {
         println!("----------State machine loop----------");
         match &write_state {
-            Some(state) => {
-                println!(
-                    "Timer is has elapsed {}",
-                    state.timer.start.elapsed().as_millis()
-                );
-                println!(
-                    "Expect to elapse {}",
-                    match &state.timer.r#type {
-                        AcsmaSocketWriteTimerType::Timeout => SOCKET_ACK_TIMEOUT.as_millis(),
-                        AcsmaSocketWriteTimerType::Backoff(_, duration) => duration.as_millis(),
-                    }
-                );
+            Some(timer) => {
+                println!("Timer is has elapsed {}", timer.elapsed().as_millis());
+                println!("Expect to elapse {}", timer.duration().as_millis());
             }
             None => {
                 println!("Timer is None")
@@ -207,13 +198,20 @@ async fn socket_daemon(
                     match frame {
                         AcsmaFrame::Ack(ack) => {
                             println!("Recieve ACK for index {}", header.seq);
-                            if let Some(state) = &write_state {
-                                let header = ack.header();
-                                if header.seq == state.task.0.header().seq {
-                                    println!("Clear ACK timout {}", header.seq);
-                                    let state = write_state.take().unwrap();
-                                    let (_, sender) = state.task;
-                                    let _ = sender.send(Ok(()));
+                            if let Some(AcsmaSocketWriteTimer::Timeout { start, inner }) =
+                                write_state
+                            {
+                                let ack_seq = ack.header().seq;
+                                let task_seq = inner.task.0.header().seq;
+                                if ack_seq == task_seq {
+                                    println!("Clear ACK timout {}", ack_seq);
+                                    let _ = inner.task.1.send(Ok(()));
+                                    let duration = generate_backoff(&mut rng, 0);
+                                    write_state =
+                                        Some(AcsmaSocketWriteTimer::backoff(None, 0, duration));
+                                } else {
+                                    write_state =
+                                        Some(AcsmaSocketWriteTimer::Timeout { start, inner })
                                 }
                             }
                         }
@@ -234,39 +232,76 @@ async fn socket_daemon(
             }
         }
 
-        if let Some(state) = &mut write_state {
-            if state.timer.is_expired() {
-                if state.timer.is_timeout() {
-                    println!("ACK timer expired for frame {}", state.task.0.header().seq);
-                    state.timer = AcsmaSocketWriteTimer::backoff(&mut rng, 0);
-                } else if !is_channel_free(&config, &mut write_monitor).await {
-                    println!(
-                        "Backoff timer expired. Medium state: busy. {}",
-                        state.task.0.header().seq
-                    );
-                    state.timer.retry(&mut rng);
-                } else if state.resends > SOCKET_MAX_RESENDS {
-                    println!(
-                        "Backoff timer expired. Medium state: free. resends exceeded {}",
-                        state.task.0.header().seq
-                    );
-                    let state = write_state.take().unwrap();
-                    let (_, sender) = state.task;
-                    let _ = sender.send(Err(AcsmaIoError::LinkError(state.resends).into()));
-                } else {
-                    println!(
-                        "Backoff timer expired. Medium state: free. Resending {}",
-                        state.task.0.header().seq
-                    );
-                    let frame = state.task.0.clone();
-                    write_ather.write(&Into::<BitVec>::into(frame)).await?;
-                    println!(
-                        "Backoff timer expired. Medium state: free. Resent {}",
-                        state.task.0.header().seq
-                    );
-                    state.resends += 1;
-                    state.timer = AcsmaSocketWriteTimer::timeout();
+        if let Some(timer) = write_state {
+            if timer.is_expired() {
+                write_state = match timer {
+                    AcsmaSocketWriteTimer::Timeout { start: _, inner } => {
+                        println!("ACK timer expired for frame {}", inner.task.0.header().seq);
+                        let duration = generate_backoff(&mut rng, 0);
+                        Some(AcsmaSocketWriteTimer::backoff(
+                            Some(inner.task),
+                            0,
+                            duration,
+                        ))
+                    }
+                    AcsmaSocketWriteTimer::Backoff {
+                        start: _,
+                        inner,
+                        mut retry,
+                        duration: _,
+                    } => match inner {
+                        Some(inner) => {
+                            if !is_channel_free(&config, &mut write_monitor).await {
+                                println!(
+                                    "Backoff timer expired. Medium state: busy. {}",
+                                    inner.task.0.header().seq
+                                );
+                                retry += 1;
+                                let duration = if retry > SOCKET_MAX_BACKOFF {
+                                    generate_backoff(&mut rng, SOCKET_MAX_BACKOFF)
+                                } else {
+                                    generate_backoff(&mut rng, retry)
+                                };
+                                Some(AcsmaSocketWriteTimer::backoff(
+                                    Some(inner.task),
+                                    retry,
+                                    duration,
+                                ))
+                            } else if inner.resends > SOCKET_MAX_RESENDS {
+                                println!(
+                                    "Backoff timer expired. Medium state: free. resends exceeded {}",
+                                    inner.task.0.header().seq
+                                );
+                                let _ = inner
+                                    .task
+                                    .1
+                                    .send(Err(AcsmaIoError::LinkError(inner.resends).into()));
+                                None
+                            } else {
+                                println!(
+                                    "Backoff timer expired. Medium state: free. Resending {}",
+                                    inner.task.0.header().seq
+                                );
+                                let frame = inner.task.0.clone();
+                                write_ather.write(&Into::<BitVec>::into(frame)).await?;
+                                println!(
+                                    "Backoff timer expired. Medium state: free. Resent {}",
+                                    inner.task.0.header().seq
+                                );
+                                Some(AcsmaSocketWriteTimer::timeout(
+                                    inner.task,
+                                    inner.resends + 1,
+                                ))
+                            }
+                        }
+                        None => {
+                            println!("Backoff timer expired. Medium state: busy. No task");
+                            None
+                        }
+                    },
                 }
+            } else {
+                write_state = Some(timer);
             }
         } else {
             let result = write_rx.try_recv();
@@ -277,21 +312,14 @@ async fn socket_daemon(
                 );
                 if !is_channel_free(&config, &mut write_monitor).await {
                     println!("Medium state: busy. set backoff timer");
-                    write_state = Some(AcsmaSocketWriteState {
-                        task,
-                        resends: 0,
-                        timer: AcsmaSocketWriteTimer::backoff(&mut rng, 0),
-                    });
+                    let duration = generate_backoff(&mut rng, 0);
+                    write_state = Some(AcsmaSocketWriteTimer::backoff(Some(task), 0, duration));
                 } else {
                     println!("Medium state: free. Sending {}", task.0.header().seq);
                     let frame = task.0.clone();
                     write_ather.write(&Into::<BitVec>::into(frame)).await?;
                     println!("Medium state: free. Sent {}", task.0.header().seq);
-                    write_state = Some(AcsmaSocketWriteState {
-                        task,
-                        resends: 0,
-                        timer: AcsmaSocketWriteTimer::timeout(),
-                    });
+                    write_state = Some(AcsmaSocketWriteTimer::timeout(task, 0));
                 }
             } else if let Err(TryRecvError::Disconnected) = result {
                 if read_tx.is_closed() {
@@ -303,13 +331,15 @@ async fn socket_daemon(
     Ok(())
 }
 
-async fn is_channel_free(config: &AcsmaSocketConfig, write_monitor: &mut AudioInputStream<f32>) -> bool {
+async fn is_channel_free(
+    config: &AcsmaSocketConfig,
+    write_monitor: &mut AudioInputStream<f32>,
+) -> bool {
     let sample_rate = config.ather_config.stream_config.sample_rate().0;
     write_monitor.resume();
     if let Some(sample) = write_monitor.next().await {
         println!("Energy: {}", sample.energy(sample_rate));
-        if sample.energy(sample_rate) < SOCKET_FREE_THRESHOLD
-        {
+        if sample.energy(sample_rate) < SOCKET_FREE_THRESHOLD {
             write_monitor.suspend();
             return true;
         }
@@ -318,69 +348,83 @@ async fn is_channel_free(config: &AcsmaSocketConfig, write_monitor: &mut AudioIn
     false
 }
 
-struct AcsmaSocketWriteState {
+enum AcsmaSocketWriteTimer {
+    Timeout {
+        start: Instant,
+        inner: AcsmaSocketWriteTimerInner,
+    },
+    Backoff {
+        start: Instant,
+        inner: Option<AcsmaSocketWriteTimerInner>,
+        retry: usize,
+        duration: Duration,
+    },
+}
+
+struct AcsmaSocketWriteTimerInner {
     task: AcsmaSocketWriteTask,
     resends: usize,
-    timer: AcsmaSocketWriteTimer,
-}
-
-struct AcsmaSocketWriteTimer {
-    start: Instant,
-    r#type: AcsmaSocketWriteTimerType,
-}
-
-enum AcsmaSocketWriteTimerType {
-    Timeout,
-    Backoff(usize, Duration),
 }
 
 fn generate_backoff(rng: &mut SmallRng, factor: usize) -> Duration {
-    let k = rng.gen_range(0..(1 << factor) as u32);
+    let k = rng.gen_range(0..=(1 << factor) as u32);
     println!("Set timer to {} slots by {}", k, factor);
     k * SOCKET_SLOT_TIMEOUT
 }
 
 impl AcsmaSocketWriteTimer {
-    fn timeout() -> Self {
-        Self {
+    fn timeout(task: AcsmaSocketWriteTask, resends: usize) -> Self {
+        Self::Timeout {
             start: Instant::now(),
-            r#type: AcsmaSocketWriteTimerType::Timeout,
+            inner: AcsmaSocketWriteTimerInner { task, resends },
         }
     }
 
-    fn backoff(rng: &mut SmallRng, retry: usize) -> Self {
-        let duration = generate_backoff(rng, retry);
-        Self {
+    fn backoff(task: Option<AcsmaSocketWriteTask>, retry: usize, duration: Duration) -> Self {
+        let inner = task.map(|task| AcsmaSocketWriteTimerInner { task, resends: 0 });
+        Self::Backoff {
             start: Instant::now(),
-            r#type: AcsmaSocketWriteTimerType::Backoff(retry, duration),
+            inner,
+            retry,
+            duration,
         }
     }
 }
 
 impl AcsmaSocketWriteTimer {
     fn is_expired(&self) -> bool {
-        match self.r#type {
-            AcsmaSocketWriteTimerType::Timeout => self.start.elapsed() > SOCKET_ACK_TIMEOUT,
-            AcsmaSocketWriteTimerType::Backoff(_, duration) => self.start.elapsed() > duration,
+        match self {
+            Self::Timeout { start, inner: _ } => start.elapsed() > SOCKET_ACK_TIMEOUT,
+            Self::Backoff {
+                start,
+                inner: _,
+                retry: _,
+                duration,
+            } => start.elapsed() > *duration,
         }
     }
 
-    fn retry(&mut self, rng: &mut SmallRng) {
-        self.start = Instant::now();
-        match &mut self.r#type {
-            AcsmaSocketWriteTimerType::Timeout => {}
-            AcsmaSocketWriteTimerType::Backoff(retry, duration) => {
-                *retry += 1;
-                if *retry > SOCKET_MAX_BACKOFF {
-                    *duration = generate_backoff(rng, SOCKET_MAX_BACKOFF);
-                } else {
-                    *duration = generate_backoff(rng, *retry);
-                }
-            }
+    fn elapsed(&self) -> Duration {
+        match self {
+            Self::Timeout { start, inner: _ } => start.elapsed(),
+            Self::Backoff {
+                start,
+                inner: _,
+                retry: _,
+                duration: _,
+            } => start.elapsed(),
         }
     }
 
-    fn is_timeout(&self) -> bool {
-        matches!(self.r#type, AcsmaSocketWriteTimerType::Timeout)
+    fn duration(&self) -> Duration {
+        match self {
+            Self::Timeout { start: _, inner: _ } => SOCKET_ACK_TIMEOUT,
+            Self::Backoff {
+                start: _,
+                inner: _,
+                retry: _,
+                duration,
+            } => *duration,
+        }
     }
 }
