@@ -37,5 +37,5 @@ pub const SOCKET_RECIEVE_TIMEOUT: Duration = Duration::from_millis(50);
 pub const SOCKET_MAX_RESENDS: usize = 50;
 pub const SOCKET_MAX_BACKOFF: usize = 3; // 2 | 3 | 4 | 5 | 8 | 16
 
-pub const SOCKET_FREE_THRESHOLD: f32 = 0.001;
+pub const SOCKET_FREE_THRESHOLD: f32 = 1e-4;
 pub const SOCKET_COLLISSION_THRESHOLD: f32 = 0.5;

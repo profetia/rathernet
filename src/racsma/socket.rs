@@ -6,7 +6,7 @@ use super::{
     frame::{AckFrame, AcsmaFrame, DataFrame, Frame, NonAckFrame},
 };
 use crate::{
-    rather::{AtherInputStream, AtherOutputStream, AtherStreamConfig},
+    rather::{AtherInputStream, AtherOutputStream, AtherStreamConfig, signal::Energy},
     raudio::{AsioDevice, AudioInputStream, AudioOutputStream, ContinuousStream},
 };
 use anyhow::Result;
@@ -107,11 +107,11 @@ impl AcsmaSocketWriter {
             });
 
         for (index, frame) in frames.enumerate() {
-            println!("Sending frame {}", index);
+            println!("Begin frame {}", index);
             let (tx, rx) = oneshot::channel();
             self.write_tx.send((NonAckFrame::Data(frame), tx))?;
             rx.await??;
-            println!("Sent frame {}", index);
+            println!("End frame (ACK checked) {}", index);
         }
 
         Ok(())
@@ -202,7 +202,7 @@ async fn socket_daemon(
             println!("Got frame len: {}", bits.len());
             if let Ok(frame) = AcsmaFrame::try_from(bits) {
                 let header = frame.header().clone();
-                println!("Recieve frame with index {}", header.seq);
+                println!("Recieve raw frame with index {}", header.seq);
                 if header.src == config.opponent && header.dest == config.address {
                     match frame {
                         AcsmaFrame::Ack(ack) => {
@@ -239,7 +239,7 @@ async fn socket_daemon(
                 if state.timer.is_timeout() {
                     println!("ACK timer expired for frame {}", state.task.0.header().seq);
                     state.timer = AcsmaSocketWriteTimer::backoff(&mut rng, 0);
-                } else if !is_channel_free(&mut write_monitor).await {
+                } else if !is_channel_free(&config, &mut write_monitor).await {
                     println!(
                         "Backoff timer expired. Medium state: busy. {}",
                         state.task.0.header().seq
@@ -275,7 +275,7 @@ async fn socket_daemon(
                     "Accepted frame from source with index {}",
                     task.0.header().seq
                 );
-                if !is_channel_free(&mut write_monitor).await {
+                if !is_channel_free(&config, &mut write_monitor).await {
                     println!("Medium state: busy. set backoff timer");
                     write_state = Some(AcsmaSocketWriteState {
                         task,
@@ -303,12 +303,12 @@ async fn socket_daemon(
     Ok(())
 }
 
-async fn is_channel_free(write_monitor: &mut AudioInputStream<f32>) -> bool {
+async fn is_channel_free(config: &AcsmaSocketConfig, write_monitor: &mut AudioInputStream<f32>) -> bool {
+    let sample_rate = config.ather_config.stream_config.sample_rate().0;
     write_monitor.resume();
     if let Some(sample) = write_monitor.next().await {
-        if sample
-            .iter()
-            .all(|&sample| sample.abs() < SOCKET_FREE_THRESHOLD)
+        println!("Energy: {}", sample.energy(sample_rate));
+        if sample.energy(sample_rate) < SOCKET_FREE_THRESHOLD
         {
             write_monitor.suspend();
             return true;
@@ -335,7 +335,7 @@ enum AcsmaSocketWriteTimerType {
 }
 
 fn generate_backoff(rng: &mut SmallRng, factor: usize) -> Duration {
-    let k = rng.gen_range(0..=(1 << factor) as u32);
+    let k = rng.gen_range(0..(1 << factor) as u32);
     println!("Set timer to {} slots by {}", k, factor);
     k * SOCKET_SLOT_TIMEOUT
 }
