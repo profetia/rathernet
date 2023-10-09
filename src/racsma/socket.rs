@@ -394,37 +394,24 @@ impl AcsmaSocketWriteTimer {
 impl AcsmaSocketWriteTimer {
     fn is_expired(&self) -> bool {
         match self {
-            Self::Timeout { start, inner: _ } => start.elapsed() > SOCKET_ACK_TIMEOUT,
+            Self::Timeout { start, .. } => start.elapsed() > SOCKET_ACK_TIMEOUT,
             Self::Backoff {
-                start,
-                inner: _,
-                retry: _,
-                duration,
+                start, duration, ..
             } => start.elapsed() > *duration,
         }
     }
 
     fn elapsed(&self) -> Duration {
         match self {
-            Self::Timeout { start, inner: _ } => start.elapsed(),
-            Self::Backoff {
-                start,
-                inner: _,
-                retry: _,
-                duration: _,
-            } => start.elapsed(),
+            Self::Timeout { start, .. } => start.elapsed(),
+            Self::Backoff { start, .. } => start.elapsed(),
         }
     }
 
     fn duration(&self) -> Duration {
         match self {
-            Self::Timeout { start: _, inner: _ } => SOCKET_ACK_TIMEOUT,
-            Self::Backoff {
-                start: _,
-                inner: _,
-                retry: _,
-                duration,
-            } => *duration,
+            Self::Timeout { .. } => SOCKET_ACK_TIMEOUT,
+            Self::Backoff { duration, .. } => *duration,
         }
     }
 }

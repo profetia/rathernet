@@ -318,7 +318,7 @@ async fn decode_frame(
         }
     }
 
-    let length = length.decode();
+    let length = DecodeToInt::<usize>::decode(&length).min(PAYLOAD_BITS_LEN);
 
     let mut payload = bitvec![];
     while payload.len() < length {
