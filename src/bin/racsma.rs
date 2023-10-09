@@ -217,7 +217,7 @@ async fn main() -> Result<()> {
                 AudioInputStream::try_from_device_config(&device, stream_config.clone())?;
             let write_stream =
                 AudioOutputStream::try_from_device_config(&device, stream_config.clone())?;
-            let ather_config = AtherStreamConfig::new(10000, 15000, stream_config.clone());
+            let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
             let mut read_ather = AtherInputStream::new(ather_config.clone(), read_stream);
             let write_ather = AtherOutputStream::new(ather_config.clone(), write_stream);
 
@@ -264,7 +264,7 @@ async fn main() -> Result<()> {
         } => {
             let device = create_device(device)?;
             let stream_config = create_stream_config(&device)?;
-            let ather_config = AtherStreamConfig::new(10000, 15000, stream_config.clone());
+            let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
 
             let socket_config = AcsmaSocketConfig::new(address, opponent, ather_config);
             let (mut tx_socket, _) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
@@ -283,7 +283,7 @@ async fn main() -> Result<()> {
             let device = create_device(device)?;
             let stream_config = create_stream_config(&device)?;
 
-            let ather_config = AtherStreamConfig::new(10000, 15000, stream_config.clone());
+            let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
 
             let socket_config = AcsmaSocketConfig::new(address, opponent, ather_config);
             let (_, mut rx_socket) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
@@ -304,7 +304,7 @@ async fn main() -> Result<()> {
         } => {
             let device = create_device(device)?;
             let stream_config = create_stream_config(&device)?;
-            let ather_config = AtherStreamConfig::new(10000, 15000, stream_config.clone());
+            let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
 
             let socket_config = AcsmaSocketConfig::new(address, opponent, ather_config);
             let (mut tx_socket, mut rx_socket) =
