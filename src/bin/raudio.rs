@@ -103,6 +103,7 @@ fn create_stream_config(device: &AsioDevice) -> Result<SupportedStreamConfig> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::init();
     let cli = RaudioCli::parse();
     match cli.subcmd {
         Commands::Write {

@@ -174,6 +174,7 @@ async fn calibrate(elapse: u64, device: Option<String>) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::init();
     let cli = RatherCli::parse();
     match cli.subcmd {
         Commands::Calibrate { elapse, device } => calibrate(elapse, device).await?,

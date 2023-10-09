@@ -8,6 +8,7 @@ use cpal::{
     FromSample, SampleFormat, SizedSample, SupportedStreamConfig, SupportedStreamConfigsError,
 };
 use crossbeam::sync::ShardedLock;
+use log;
 use rodio::{Sample, Sink, Source};
 use std::{sync::Arc, task::Poll, time::Duration};
 use tokio::{
@@ -71,7 +72,7 @@ impl AudioOutputStream {
         let result = time::timeout(timeout, self.write(source)).await;
         match result {
             Ok(result) => result,
-            Err(_) => Ok(())
+            Err(_) => Ok(()),
         }
     }
 }
@@ -158,7 +159,7 @@ where
                 sender.send(data).unwrap();
             }
         },
-        |error| eprintln!("an error occurred on input stream: {}", error),
+        |error| log::error!("an error occurred on input stream: {}", error),
         None,
     )?))
 }

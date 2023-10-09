@@ -6,6 +6,7 @@ use super::{
 use crate::rather::{AtherInputStream, AtherOutputStream};
 use anyhow::Result;
 use bitvec::prelude::*;
+use log;
 use std::collections::BTreeMap;
 use tokio::time;
 use tokio_stream::StreamExt;
@@ -57,10 +58,11 @@ impl AcsmaIoStream {
 
         for (index, frame) in frames.enumerate() {
             let mut retry = 0usize;
+            log::info!("Writing frame {}", index);
             loop {
-                println!("Sending frame {}", index);
+                log::debug!("Sending frame {} for the {} time", index, retry);
                 self.ostream.write(&frame).await?;
-                println!("Sent frame {}", index);
+                log::debug!("Sent frame {} for the {} time", index, retry);
                 let ack_future = async {
                     while let Some(bits) = self.istream.next().await {
                         if let Ok(frame) = AckFrame::try_from(bits) {
@@ -69,7 +71,7 @@ impl AcsmaIoStream {
                                 && header.dest == self.config.address
                                 && header.seq == index
                             {
-                                println!("Recieve ACK for index {}", header.seq);
+                                log::debug!("Recieve ACK for index {}", header.seq);
                                 break;
                             }
                         }
@@ -78,13 +80,14 @@ impl AcsmaIoStream {
                 if time::timeout(SOCKET_ACK_TIMEOUT, ack_future).await.is_ok() {
                     break;
                 } else {
-                    println!("Timeout ACK for index");
+                    log::debug!("Timeout ACK for index");
                     retry += 1;
                     if retry >= SOCKET_MAX_RESENDS {
                         return Err(AcsmaIoError::LinkError(retry).into());
                     }
                 }
             }
+            log::info!("Wrote frame {}", index);
         }
 
         Ok(())
@@ -93,21 +96,23 @@ impl AcsmaIoStream {
     pub async fn read(&mut self, src: usize, buf: &mut BitSlice) -> Result<()> {
         let (mut bucket, mut total_len) = (BTreeMap::new(), 0usize);
         while let Some(bits) = self.istream.next().await {
-            println!("Got frame {}", bits.len());
+            log::debug!("Got frame {}", bits.len());
             if let Ok(frame) = DataFrame::try_from(bits) {
                 let header = frame.header();
                 if header.src == src && header.dest == self.config.address {
-                    println!("Recieve frame with index {}", header.seq);
+                    log::debug!("Recieve frame with index {}", header.seq);
                     let ack = AckFrame::new(header.src, header.dest, header.seq);
-                    println!("Sending ACK for index {}", header.seq);
+                    log::debug!("Sending ACK for index {}", header.seq);
                     self.ostream.write(&Into::<BitVec>::into(ack)).await?;
-                    println!(
+                    log::debug!(
                         "Sent ACK for index {}, total recieved {}",
-                        header.seq, total_len
+                        header.seq,
+                        total_len
                     );
 
                     let payload = frame.payload().unwrap();
                     bucket.entry(header.seq).or_insert_with(|| {
+                        log::info!("Read frame with index {}", header.seq);
                         total_len += payload.len();
                         payload.to_owned()
                     });
@@ -118,6 +123,8 @@ impl AcsmaIoStream {
                 }
             }
         }
+
+        log::info!("Read {} bits", total_len);
 
         buf.copy_from_bitslice(
             &bucket
