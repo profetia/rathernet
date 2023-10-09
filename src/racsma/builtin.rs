@@ -34,7 +34,7 @@ pub const SOCKET_SLOT_TIMEOUT: Duration = Duration::from_millis(100);
 pub const SOCKET_ACK_TIMEOUT: Duration = Duration::from_millis(200);
 pub const SOCKET_RECIEVE_TIMEOUT: Duration = Duration::from_millis(50);
 
-pub const SOCKET_MAX_RESENDS: usize = 50;
+pub const SOCKET_MAX_RESENDS: usize = 30;
 pub const SOCKET_MAX_BACKOFF: usize = 3; // 2 | 3 | 4 | 5 | 8 | 16
 
 pub const SOCKET_FREE_THRESHOLD: f32 = 1e-4;
