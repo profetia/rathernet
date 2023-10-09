@@ -1,7 +1,6 @@
 use anyhow::Result;
 use bitvec::prelude::*;
 use clap::{Parser, Subcommand, ValueEnum};
-use env_logger;
 use rathernet::racsma::{AcsmaIoSocket, AcsmaIoStream, AcsmaSocketConfig, AcsmaStreamConfig};
 use rathernet::rather::builtin::PAYLOAD_BITS_LEN;
 use rathernet::rather::{AtherInputStream, AtherOutputStream, AtherStreamConfig};
