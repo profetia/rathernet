@@ -54,12 +54,9 @@ impl From<Preamble> for AudioSamples<f32> {
 pub struct Symbol(pub AudioSamples<f32>);
 
 impl Symbol {
-    pub fn new(frequency: u32, sample_rate: u32, duration: f32) -> (Self, Self) {
+    pub fn new(sample_rate: u32, duration: f32) -> (Self, Self) {
         let zero = (0..(duration * sample_rate as f32) as usize)
-            .map(|item| {
-                let t = item as f32 * 2.0 * PI / sample_rate as f32;
-                (t * frequency as f32).sin()
-            })
+            .map(|item| 1. - 2. * (item as f32) / (duration * sample_rate as f32))
             .collect::<AudioSamples<f32>>();
         let one = zero.iter().map(|item| -item).collect::<AudioSamples<f32>>();
 

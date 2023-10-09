@@ -27,10 +27,11 @@ async fn main() -> Result<()> {
     let read_stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
     let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
 
-    let mut monitor_stream = AudioInputStream::<f32>::try_from_device_config(&device, config.clone())?;
+    let mut monitor_stream =
+        AudioInputStream::<f32>::try_from_device_config(&device, config.clone())?;
 
-    let config = AtherStreamConfig::new(10000, 15000, config.clone());
-    
+    let config = AtherStreamConfig::new(15000, config.clone());
+
     let mut read_ather = AtherInputStream::new(config.clone(), read_stream);
     let write_ather = AtherOutputStream::new(config.clone(), write_stream);
 
@@ -45,12 +46,10 @@ async fn main() -> Result<()> {
     };
     let read_future = async {
         let mut buf = bitvec![0; bits.len()];
-        read(&mut read_ather, &mut buf).await;    
-        buf    
+        read(&mut read_ather, &mut buf).await;
+        buf
     };
-    let monitor_future = async {
-        monitor_stream.read().await
-    };
+    let monitor_future = async { monitor_stream.read().await };
 
     let (_, mut read_buf, _) = tokio::join!(write_future, read_future, monitor_future);
 
