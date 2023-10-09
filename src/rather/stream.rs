@@ -282,6 +282,7 @@ async fn decode_frame(
             if value > PREAMBLE_CORR_THRESHOLD {
                 if (index + preamble_len as isize) < (buf.len() as isize) {
                     *buf = buf.split_off((index + preamble_len as isize) as usize);
+                    // println!("{}", value);
                     break;
                 }
             } else {
