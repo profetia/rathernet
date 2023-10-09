@@ -1,7 +1,7 @@
 use anyhow::Result;
 use bitvec::prelude::*;
 use clap::{Parser, Subcommand, ValueEnum};
-use rathernet::racsma::{AcsmaIoSocket, AcsmaSocketConfig};
+use rathernet::racsma::{AcsmaIoSocket, AcsmaIoStream, AcsmaSocketConfig, AcsmaStreamConfig};
 use rathernet::rather::builtin::PAYLOAD_BITS_LEN;
 use rathernet::rather::{AtherInputStream, AtherOutputStream, AtherStreamConfig};
 use rathernet::raudio::{AsioDevice, AudioInputStream, AudioOutputStream};
@@ -264,13 +264,19 @@ async fn main() -> Result<()> {
         } => {
             let device = create_device(device)?;
             let stream_config = create_stream_config(&device)?;
+            let read_stream =
+                AudioInputStream::try_from_device_config(&device, stream_config.clone())?;
+            let write_stream =
+                AudioOutputStream::try_from_device_config(&device, stream_config.clone())?;
             let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
+            let read_ather = AtherInputStream::new(ather_config.clone(), read_stream);
+            let write_ather = AtherOutputStream::new(ather_config.clone(), write_stream);
 
-            let socket_config = AcsmaSocketConfig::new(address, opponent, ather_config);
-            let (mut tx_socket, _) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
+            let stream_config = AcsmaStreamConfig::new(address);
+            let mut acsma_stream = AcsmaIoStream::new(stream_config, read_ather, write_ather);
 
             let bits = load_bits(source, chars)?;
-            tx_socket.write(&bits).await?;
+            acsma_stream.write(opponent, &bits).await?;
         }
         Commands::Read {
             file,
@@ -282,14 +288,19 @@ async fn main() -> Result<()> {
         } => {
             let device = create_device(device)?;
             let stream_config = create_stream_config(&device)?;
-
+            let read_stream =
+                AudioInputStream::try_from_device_config(&device, stream_config.clone())?;
+            let write_stream =
+                AudioOutputStream::try_from_device_config(&device, stream_config.clone())?;
             let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
+            let read_ather = AtherInputStream::new(ather_config.clone(), read_stream);
+            let write_ather = AtherOutputStream::new(ather_config.clone(), write_stream);
 
-            let socket_config = AcsmaSocketConfig::new(address, opponent, ather_config);
-            let (_, mut rx_socket) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
+            let stream_config = AcsmaStreamConfig::new(address);
+            let mut acsma_stream = AcsmaIoStream::new(stream_config, read_ather, write_ather);
 
             let mut buf = bitvec![0; num_bits];
-            rx_socket.read(&mut buf).await?;
+            acsma_stream.read(opponent, &mut buf).await?;
 
             dump_bits(buf, file, chars)?;
         }
