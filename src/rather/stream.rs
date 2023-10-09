@@ -4,8 +4,7 @@ use super::{
         WARMUP_SYMBOL_LEN,
     },
     encode::DecodeToInt,
-    signal::{self, BandPass},
-    Preamble, Symbol, Warmup,
+    signal, Preamble, Symbol, Warmup,
 };
 use crate::raudio::{
     AudioInputStream, AudioOutputStream, AudioSamples, AudioTrack, ContinuousStream,
@@ -25,7 +24,6 @@ use tokio_stream::{Stream, StreamExt};
 
 #[derive(Debug, Clone)]
 pub struct AtherStreamConfig {
-    pub frequency: u32,
     pub bit_rate: u32,
     pub warmup: Warmup,
     pub preamble: Preamble,
@@ -34,16 +32,15 @@ pub struct AtherStreamConfig {
 }
 
 impl AtherStreamConfig {
-    pub fn new(frequency: u32, bit_rate: u32, stream_config: SupportedStreamConfig) -> Self {
+    pub fn new(bit_rate: u32, stream_config: SupportedStreamConfig) -> Self {
         let duration = 1.0 / bit_rate as f32;
         let sample_rate = stream_config.sample_rate().0;
 
         Self {
-            frequency,
             bit_rate,
             warmup: Warmup::new(WARMUP_SYMBOL_LEN, sample_rate, duration),
             preamble: Preamble::new(PREAMBLE_SYMBOL_LEN, sample_rate, duration),
-            symbols: Symbol::new(frequency, sample_rate, duration),
+            symbols: Symbol::new(sample_rate, duration),
             stream_config,
         }
     }
@@ -274,11 +271,6 @@ async fn decode_frame(
     stream: &mut AudioInputStream<f32>,
     buf: &mut Vec<f32>,
 ) -> Option<BitVec> {
-    let sample_rate = config.stream_config.sample_rate().0 as f32;
-    let band_pass = (
-        config.frequency as f32 - 1000.,
-        config.frequency as f32 + 1000.,
-    );
     let preamble_len = config.preamble.0.len();
     let symbol_len = config.symbols.0 .0.len();
 
@@ -305,8 +297,7 @@ async fn decode_frame(
     let mut length = bitvec![];
     while length.len() < LENGTH_BITS_LEN {
         if buf.len() >= symbol_len {
-            let mut symbol = buf[..symbol_len].to_owned();
-            symbol.band_pass(sample_rate, band_pass);
+            let symbol = buf[..symbol_len].to_owned();
             let value = signal::dot_product(&config.symbols.1 .0, &symbol);
             length.push(value > 0.);
             *buf = buf.split_off(symbol_len);
@@ -323,8 +314,7 @@ async fn decode_frame(
     let mut payload = bitvec![];
     while payload.len() < length {
         if buf.len() >= symbol_len {
-            let mut symbol = buf[..symbol_len].to_owned();
-            symbol.band_pass(sample_rate, band_pass);
+            let symbol = buf[..symbol_len].to_owned();
             let value = signal::dot_product(&config.symbols.1 .0, &symbol);
             payload.push(value > 0.);
 
