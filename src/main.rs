@@ -1,7 +1,6 @@
 use anyhow::Result;
 use bitvec::prelude::*;
 use cpal::{traits::DeviceTrait, SupportedStreamConfig};
-use env_logger;
 use rathernet::rather::builtin::PAYLOAD_BITS_LEN;
 use rathernet::rather::AtherInputStream;
 use rathernet::{
