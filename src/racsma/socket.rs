@@ -11,6 +11,7 @@ use crate::{
 };
 use anyhow::Result;
 use bitvec::prelude::*;
+use log;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use std::{
     collections::BTreeMap,
@@ -58,7 +59,7 @@ impl AcsmaSocketReader {
         let (mut bucket, mut total_len) = (BTreeMap::new(), 0usize);
         while let Some(frame) = self.read_rx.recv().await {
             let header = frame.header().clone();
-            println!("Receive frame {}, total {}", header.seq, total_len);
+            log::info!("Receive frame {}, total {}", header.seq, total_len);
             match frame {
                 NonAckFrame::Data(data) => {
                     let payload = data.payload().unwrap();
@@ -73,6 +74,8 @@ impl AcsmaSocketReader {
                 }
             }
         }
+
+        log::info!("Read {} frames, total {}", bucket.len(), total_len);
 
         buf.copy_from_bitslice(
             &bucket
@@ -107,11 +110,11 @@ impl AcsmaSocketWriter {
             });
 
         for (index, frame) in frames.enumerate() {
-            println!("Begin frame {}", index);
+            log::info!("Writing frame {}", index);
             let (tx, rx) = oneshot::channel();
             self.write_tx.send((NonAckFrame::Data(frame), tx))?;
             rx.await??;
-            println!("End frame (ACK checked) {}", index);
+            log::info!("Wrote frame (ACK checked) {}", index);
         }
 
         Ok(())
@@ -179,32 +182,32 @@ async fn socket_daemon(
     let mut rng = SmallRng::from_entropy();
     let mut write_state: Option<AcsmaSocketWriteTimer> = None;
     loop {
-        println!("----------State machine loop----------");
+        log::debug!("----------State machine loop----------");
         match &write_state {
             Some(timer) => {
-                println!("Timer is has elapsed {}", timer.elapsed().as_millis());
-                println!("Expect to elapse {}", timer.duration().as_millis());
+                log::debug!("Timer is has elapsed {}", timer.elapsed().as_millis());
+                log::debug!("Expect to elapse {}", timer.duration().as_millis());
             }
             None => {
-                println!("Timer is None")
+                log::debug!("Timer is None")
             }
         }
         if let Ok(Some(bits)) = time::timeout(SOCKET_RECIEVE_TIMEOUT, read_ather.next()).await {
-            println!("Got frame len: {}", bits.len());
+            log::debug!("Got frame len: {}", bits.len());
             if let Ok(frame) = AcsmaFrame::try_from(bits) {
                 let header = frame.header().clone();
-                println!("Recieve raw frame with index {}", header.seq);
+                log::debug!("Recieve raw frame with index {}", header.seq);
                 if header.src == config.opponent && header.dest == config.address {
                     match frame {
                         AcsmaFrame::Ack(ack) => {
-                            println!("Recieve ACK for index {}", header.seq);
+                            log::debug!("Recieve ACK for index {}", header.seq);
                             if let Some(AcsmaSocketWriteTimer::Timeout { start, inner }) =
                                 write_state
                             {
                                 let ack_seq = ack.header().seq;
                                 let task_seq = inner.task.0.header().seq;
                                 if ack_seq == task_seq {
-                                    println!("Clear ACK timout {}", ack_seq);
+                                    log::debug!("Clear ACK timout {}", ack_seq);
                                     let _ = inner.task.1.send(Ok(()));
                                     let duration = generate_backoff(&mut rng, 0);
                                     write_state =
@@ -216,19 +219,19 @@ async fn socket_daemon(
                             }
                         }
                         AcsmaFrame::NonAck(data) => {
-                            println!("Receive data for index {}", header.seq);
+                            log::debug!("Receive data for index {}", header.seq);
                             let ack = AckFrame::new(header.src, header.dest, header.seq);
-                            println!("Sending ACK for index {}", header.seq);
+                            log::debug!("Sending ACK for index {}", header.seq);
                             write_ather.write(&Into::<BitVec>::into(ack)).await?;
-                            println!("Sent ACK for index {}", header.seq);
+                            log::debug!("Sent ACK for index {}", header.seq);
                             let _ = read_tx.send(data);
                         }
                     }
                 } else {
-                    println!("Recieve frame but not for me");
+                    log::debug!("Recieve frame but not for me");
                 }
             } else {
-                println!("Recieve frame but checksum failed");
+                log::debug!("Recieve frame but checksum failed");
             }
         }
 
@@ -236,7 +239,7 @@ async fn socket_daemon(
             if timer.is_expired() {
                 write_state = match timer {
                     AcsmaSocketWriteTimer::Timeout { start: _, inner } => {
-                        println!("ACK timer expired for frame {}", inner.task.0.header().seq);
+                        log::debug!("ACK timer expired for frame {}", inner.task.0.header().seq);
                         let duration = generate_backoff(&mut rng, 0);
                         Some(AcsmaSocketWriteTimer::backoff(
                             Some(inner.task),
@@ -252,7 +255,7 @@ async fn socket_daemon(
                     } => match inner {
                         Some(inner) => {
                             if !is_channel_free(&config, &mut write_monitor).await {
-                                println!(
+                                log::debug!(
                                     "Backoff timer expired. Medium state: busy. {}",
                                     inner.task.0.header().seq
                                 );
@@ -268,7 +271,7 @@ async fn socket_daemon(
                                     duration,
                                 ))
                             } else if inner.resends > SOCKET_MAX_RESENDS {
-                                println!(
+                                log::debug!(
                                     "Backoff timer expired. Medium state: free. resends exceeded {}",
                                     inner.task.0.header().seq
                                 );
@@ -278,13 +281,13 @@ async fn socket_daemon(
                                     .send(Err(AcsmaIoError::LinkError(inner.resends).into()));
                                 None
                             } else {
-                                println!(
+                                log::debug!(
                                     "Backoff timer expired. Medium state: free. Resending {}",
                                     inner.task.0.header().seq
                                 );
                                 let frame = inner.task.0.clone();
                                 write_ather.write(&Into::<BitVec>::into(frame)).await?;
-                                println!(
+                                log::debug!(
                                     "Backoff timer expired. Medium state: free. Resent {}",
                                     inner.task.0.header().seq
                                 );
@@ -295,7 +298,7 @@ async fn socket_daemon(
                             }
                         }
                         None => {
-                            println!("Backoff timer expired. Medium state: busy. No task");
+                            log::debug!("Backoff timer expired. Medium state: busy. No task");
                             None
                         }
                     },
@@ -306,19 +309,19 @@ async fn socket_daemon(
         } else {
             let result = write_rx.try_recv();
             if let Ok(task) = result {
-                println!(
+                log::debug!(
                     "Accepted frame from source with index {}",
                     task.0.header().seq
                 );
                 if !is_channel_free(&config, &mut write_monitor).await {
-                    println!("Medium state: busy. set backoff timer");
+                    log::debug!("Medium state: busy. set backoff timer");
                     let duration = generate_backoff(&mut rng, 0);
                     write_state = Some(AcsmaSocketWriteTimer::backoff(Some(task), 0, duration));
                 } else {
-                    println!("Medium state: free. Sending {}", task.0.header().seq);
+                    log::debug!("Medium state: free. Sending {}", task.0.header().seq);
                     let frame = task.0.clone();
                     write_ather.write(&Into::<BitVec>::into(frame)).await?;
-                    println!("Medium state: free. Sent {}", task.0.header().seq);
+                    log::debug!("Medium state: free. Sent {}", task.0.header().seq);
                     write_state = Some(AcsmaSocketWriteTimer::timeout(task, 0));
                 }
             } else if let Err(TryRecvError::Disconnected) = result {
@@ -338,7 +341,7 @@ async fn is_channel_free(
     let sample_rate = config.ather_config.stream_config.sample_rate().0;
     write_monitor.resume();
     if let Some(sample) = write_monitor.next().await {
-        println!("Energy: {}", sample.energy(sample_rate));
+        log::debug!("Energy: {}", sample.energy(sample_rate));
         if sample.energy(sample_rate) < SOCKET_FREE_THRESHOLD {
             write_monitor.suspend();
             return true;
@@ -368,7 +371,7 @@ struct AcsmaSocketWriteTimerInner {
 
 fn generate_backoff(rng: &mut SmallRng, factor: usize) -> Duration {
     let k = rng.gen_range(0..=(1 << factor) as u32);
-    println!("Set timer to {} slots by {}", k, factor);
+    log::debug!("Set timer to {} slots by {}", k, factor);
     k * SOCKET_SLOT_TIMEOUT
 }
 

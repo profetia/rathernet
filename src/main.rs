@@ -1,8 +1,8 @@
 use anyhow::Result;
 use bitvec::prelude::*;
 use cpal::{traits::DeviceTrait, SupportedStreamConfig};
+use env_logger;
 use rathernet::rather::builtin::PAYLOAD_BITS_LEN;
-// use rathernet::rather::signal::BandPass;
 use rathernet::rather::AtherInputStream;
 use rathernet::{
     rather::{AtherOutputStream, AtherStreamConfig},
@@ -14,6 +14,7 @@ use tokio_stream::StreamExt;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::init();
     let device = AsioDevice::try_default()?;
 
     let default_config = device.0.default_output_config()?;

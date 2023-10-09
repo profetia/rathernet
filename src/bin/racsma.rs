@@ -1,6 +1,7 @@
 use anyhow::Result;
 use bitvec::prelude::*;
 use clap::{Parser, Subcommand, ValueEnum};
+use env_logger;
 use rathernet::racsma::{AcsmaIoSocket, AcsmaIoStream, AcsmaSocketConfig, AcsmaStreamConfig};
 use rathernet::rather::builtin::PAYLOAD_BITS_LEN;
 use rathernet::rather::{AtherInputStream, AtherOutputStream, AtherStreamConfig};
@@ -201,6 +202,7 @@ fn dump_bits(mut buf: BitVec, file: Option<PathBuf>, chars: bool) -> Result<()> 
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::init();
     let cli = RacsmaCli::parse();
     match cli.subcmd {
         Commands::Calibrate {
