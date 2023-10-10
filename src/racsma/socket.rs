@@ -1,6 +1,6 @@
 use super::{
     builtin::{
-        PAYLOAD_BITS_LEN, SOCKET_ACK_TIMEOUT, SOCKET_FREE_THRESHOLD, SOCKET_MAX_BACKOFF,
+        PAYLOAD_BITS_LEN, SOCKET_ACK_TIMEOUT, SOCKET_FREE_THRESHOLD, SOCKET_MAX_RANGE,
         SOCKET_MAX_RESENDS, SOCKET_RECIEVE_TIMEOUT, SOCKET_SLOT_TIMEOUT,
     },
     frame::{AckFrame, AcsmaFrame, DataFrame, Frame, NonAckFrame},
@@ -261,11 +261,7 @@ async fn socket_daemon(
                                     inner.task.0.header().seq
                                 );
                                 retry += 1;
-                                let duration = if retry > SOCKET_MAX_BACKOFF {
-                                    generate_backoff(&mut rng, SOCKET_MAX_BACKOFF)
-                                } else {
-                                    generate_backoff(&mut rng, retry)
-                                };
+                                let duration = generate_backoff(&mut rng, retry);
                                 Some(AcsmaSocketWriteTimer::backoff(
                                     Some(inner.task),
                                     retry,
@@ -342,11 +338,11 @@ async fn is_channel_free(
     let sample_rate = config.ather_config.stream_config.sample_rate().0;
     if let Some(sample) = write_monitor.sample().await {
         log::debug!("Energy: {}", sample.energy(sample_rate));
-        if sample.energy(sample_rate) < SOCKET_FREE_THRESHOLD {
-            return true;
-        }
+        sample.energy(sample_rate) < SOCKET_FREE_THRESHOLD        
+    } else {
+        log::debug!("No sample");
+        true
     }
-    false
 }
 
 enum AcsmaSocketWriteTimer {
@@ -368,8 +364,13 @@ struct AcsmaSocketWriteTimerInner {
 }
 
 fn generate_backoff(rng: &mut SmallRng, factor: usize) -> Duration {
-    let k = rng.gen_range(0..=(1 << factor) as u32);
-    log::debug!("Set timer to {} slots by {}", k, factor);
+    let range = if 1 << factor > SOCKET_MAX_RANGE {
+        SOCKET_MAX_RANGE
+    } else {
+        1 << factor
+    };
+    let k = rng.gen_range(0..=range as u32);
+    log::debug!("Set timer to {} slots by {}", k, range);
     k * SOCKET_SLOT_TIMEOUT
 }
 
