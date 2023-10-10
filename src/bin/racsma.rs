@@ -107,6 +107,27 @@ enum Commands {
         #[clap(short, long, default_value = "0", value_parser = parse_address)]
         peer: usize,
     },
+    /// Measure the performance of the acsma.
+    Perf {
+        /// The device used to send the bits.
+        #[clap(short, long)]
+        device: Option<String>,
+        /// The address that will be used to send the bits.
+        #[clap(short, long, default_value = "0", value_parser = parse_address)]
+        address: usize,
+        /// The peer address that will receive the bits.
+        #[clap(short, long, default_value = "0", value_parser = parse_address)]
+        peer: usize,
+    },
+    /// Keep the acsma running to serve activities from peers
+    Serve {
+        /// The device used to send the bits.
+        #[clap(short, long)]
+        device: Option<String>,
+        /// The address that will be used to send the bits.
+        #[clap(short, long, default_value = "0", value_parser = parse_address)]
+        address: usize,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
@@ -328,6 +349,30 @@ async fn main() -> Result<()> {
             tokio::try_join!(tx_socket.write(peer, &bits), rx_socket.read(peer, &mut buf))?;
 
             dump_bits(buf, file, chars)?;
+        }
+        Commands::Perf {
+            device,
+            address,
+            peer,
+        } => {
+            let device = create_device(device)?;
+            let stream_config = create_stream_config(&device)?;
+            let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
+
+            let socket_config = AcsmaSocketConfig::new(address, ather_config);
+            let (mut tx_socket, _) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
+
+            tx_socket.perf(peer).await?;
+        }
+        Commands::Serve { device, address } => {
+            let device = create_device(device)?;
+            let stream_config = create_stream_config(&device)?;
+            let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
+
+            let socket_config = AcsmaSocketConfig::new(address, ather_config);
+            let (_, mut rx_socket) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
+
+            rx_socket.serve().await?;
         }
     }
     Ok(())
