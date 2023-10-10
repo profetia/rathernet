@@ -298,7 +298,7 @@ async fn socket_daemon(
                             }
                         }
                         None => {
-                            log::debug!("Backoff timer expired. Medium state: busy. No task");
+                            log::debug!("Backoff timer expired. No task");
                             None
                         }
                     },
