@@ -30,15 +30,13 @@ use tokio_stream::StreamExt;
 #[derive(Clone)]
 pub struct AcsmaSocketConfig {
     pub address: usize,
-    pub opponent: usize,
     pub ather_config: AtherStreamConfig,
 }
 
 impl AcsmaSocketConfig {
-    pub fn new(address: usize, opponent: usize, ather_config: AtherStreamConfig) -> Self {
+    pub fn new(address: usize, ather_config: AtherStreamConfig) -> Self {
         Self {
             address,
-            opponent,
             ather_config,
         }
     }
@@ -55,21 +53,23 @@ pub struct AcsmaSocketReader {
 }
 
 impl AcsmaSocketReader {
-    pub async fn read(&mut self, buf: &mut BitSlice) -> Result<()> {
+    pub async fn read(&mut self, src: usize, buf: &mut BitSlice) -> Result<()> {
         let (mut bucket, mut total_len) = (BTreeMap::new(), 0usize);
         while let Some(frame) = self.read_rx.recv().await {
             let header = frame.header().clone();
             log::info!("Receive frame {}, total {}", header.seq, total_len);
-            match frame {
-                NonAckFrame::Data(data) => {
-                    let payload = data.payload().unwrap();
-                    bucket.entry(header.seq).or_insert_with(|| {
-                        total_len += payload.len();
-                        payload.to_owned()
-                    });
+            if src == header.src {
+                match frame {
+                    NonAckFrame::Data(data) => {
+                        let payload = data.payload().unwrap();
+                        bucket.entry(header.seq).or_insert_with(|| {
+                            total_len += payload.len();
+                            payload.to_owned()
+                        });
 
-                    if total_len >= buf.len() {
-                        break;
+                        if total_len >= buf.len() {
+                            break;
+                        }
                     }
                 }
             }
@@ -96,17 +96,12 @@ pub struct AcsmaSocketWriter {
 }
 
 impl AcsmaSocketWriter {
-    pub async fn write(&mut self, bits: &BitSlice) -> Result<()> {
+    pub async fn write(&mut self, dest: usize, bits: &BitSlice) -> Result<()> {
         let frames = bits
             .chunks(PAYLOAD_BITS_LEN)
             .enumerate()
             .map(|(index, chunk)| {
-                DataFrame::new(
-                    self.config.opponent,
-                    self.config.address,
-                    index,
-                    chunk.to_owned(),
-                )
+                DataFrame::new(dest, self.config.address, index, chunk.to_owned())
             });
 
         for (index, frame) in frames.enumerate() {
@@ -198,7 +193,7 @@ async fn socket_daemon(
             if let Ok(frame) = AcsmaFrame::try_from(bits) {
                 let header = frame.header().clone();
                 log::debug!("Recieve raw frame with index {}", header.seq);
-                if header.src == config.opponent && header.dest == config.address {
+                if header.dest == config.address {
                     match frame {
                         AcsmaFrame::Ack(ack) => {
                             log::debug!("Recieve ACK for index {}", header.seq);
@@ -215,7 +210,12 @@ async fn socket_daemon(
                                         Some(AcsmaSocketWriteTimer::Timeout { start, inner })
                                     }
                                 }
-                                Some(AcsmaSocketWriteTimer::Backoff { inner: Some(inner), start, retry, duration}) => {
+                                Some(AcsmaSocketWriteTimer::Backoff {
+                                    inner: Some(inner),
+                                    start,
+                                    retry,
+                                    duration,
+                                }) => {
                                     let ack_seq = ack.header().seq;
                                     let task_seq = inner.task.0.header().seq;
                                     write_state = if ack_seq == task_seq {
@@ -224,9 +224,14 @@ async fn socket_daemon(
                                         let duration = generate_backoff(&mut rng, 0);
                                         Some(AcsmaSocketWriteTimer::backoff(None, 0, duration))
                                     } else {
-                                        Some(AcsmaSocketWriteTimer::Backoff { start, inner: Some(inner), retry, duration })
+                                        Some(AcsmaSocketWriteTimer::Backoff {
+                                            start,
+                                            inner: Some(inner),
+                                            retry,
+                                            duration,
+                                        })
                                     }
-                                },
+                                }
                                 _ => {}
                             }
                             if let Some(AcsmaSocketWriteTimer::Timeout { start, inner }) =
