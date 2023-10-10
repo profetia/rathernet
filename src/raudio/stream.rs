@@ -7,8 +7,8 @@ use cpal::{
     traits::{DeviceTrait, StreamTrait},
     FromSample, SampleFormat, SizedSample, SupportedStreamConfig, SupportedStreamConfigsError,
 };
-use crossbeam::sync::ShardedLock;
 use log;
+use parking_lot::Mutex;
 use rodio::{Sample, Sink, Source};
 use std::{sync::Arc, task::Poll, time::Duration};
 use tokio::{
@@ -111,7 +111,7 @@ where
         device: &AsioDevice,
         config: SupportedStreamConfig,
     ) -> Result<Self> {
-        let task = ShardedLock::new(AudioInputTaskState::Pending);
+        let task = Mutex::new(AudioInputTaskState::Pending);
 
         if !matches!(
             config.sample_format(),
@@ -196,7 +196,7 @@ where
     }
 }
 
-type AudioInputTask<S> = ShardedLock<AudioInputTaskState<S>>;
+type AudioInputTask<S> = Mutex<AudioInputTaskState<S>>;
 
 enum AudioInputTaskState<S> {
     Pending,
@@ -220,7 +220,7 @@ where
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        let mut guard = self.task.write().unwrap();
+        let mut guard = self.task.lock();
 
         if matches!(*guard, AudioInputTaskState::Suspended) {
             return Poll::Ready(None);
@@ -275,7 +275,7 @@ where
         + 'static,
 {
     fn suspend(&self) {
-        let mut guard = self.task.write().unwrap();
+        let mut guard = self.task.lock();
         if matches!(*guard, AudioInputTaskState::Pending) {
             *guard = AudioInputTaskState::Suspended;
         } else if let AudioInputTaskState::Running(stream, _) = &*guard {
@@ -285,7 +285,7 @@ where
     }
 
     fn resume(&self) {
-        let mut guard = self.task.write().unwrap();
+        let mut guard = self.task.lock();
         if matches!(*guard, AudioInputTaskState::Suspended) {
             *guard = AudioInputTaskState::Pending;
         }
