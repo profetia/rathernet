@@ -12,7 +12,7 @@ use crate::raudio::{
 use anyhow::Result;
 use bitvec::prelude::*;
 use cpal::SupportedStreamConfig;
-use log;
+// use log;
 use std::{
     mem,
     pin::Pin,
@@ -275,7 +275,7 @@ async fn decode_frame(
     let preamble_len = config.preamble.0.len();
     let symbol_len = config.symbols.0 .0.len();
 
-    log::debug!("Decode frame...");
+    // log::debug!("Decode frame...");
 
     loop {
         if buf.len() >= preamble_len {
@@ -283,7 +283,7 @@ async fn decode_frame(
             if value > PREAMBLE_CORR_THRESHOLD {
                 if (index + preamble_len as isize) < (buf.len() as isize) {
                     *buf = buf.split_off((index + preamble_len as isize) as usize);
-                    log::debug!("Correlation: {}", value);
+                    // log::debug!("Correlation: {}", value);
                     break;
                 }
             } else {
