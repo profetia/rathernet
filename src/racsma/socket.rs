@@ -1,7 +1,7 @@
 use super::{
     builtin::{
         PAYLOAD_BITS_LEN, SOCKET_ACK_TIMEOUT, SOCKET_FREE_THRESHOLD, SOCKET_MAX_RANGE,
-        SOCKET_MAX_RESENDS, SOCKET_RECIEVE_TIMEOUT, SOCKET_SLOT_TIMEOUT,
+        SOCKET_MAX_RESENDS, SOCKET_PERF_TIMEOUT, SOCKET_RECIEVE_TIMEOUT, SOCKET_SLOT_TIMEOUT,
     },
     frame::{AckFrame, AcsmaFrame, DataFrame, Frame, NonAckFrame},
 };
@@ -88,6 +88,14 @@ impl AcsmaSocketReader {
 
         Ok(())
     }
+
+    pub async fn serve(&mut self) -> Result<()> {
+        while let Some(frame) = self.read_rx.recv().await {
+            let header = frame.header();
+            log::info!("Receive frame {} from {}", header.seq, header.src);
+        }
+        Ok(())
+    }
 }
 
 pub struct AcsmaSocketWriter {
@@ -113,6 +121,43 @@ impl AcsmaSocketWriter {
         }
 
         Ok(())
+    }
+
+    pub async fn perf(&mut self, dest: usize) -> Result<()> {
+        let bits = bitvec![usize, Lsb0; 0; PAYLOAD_BITS_LEN];
+        let frame = DataFrame::new(dest, self.config.address, 0, bits);
+        let mut transmitted = 0usize;
+        let mut rounds = 0usize;
+        loop {
+            if let Ok(inner) = time::timeout(
+                SOCKET_PERF_TIMEOUT,
+                perf_daemon(&mut self.write_tx, &frame, &mut transmitted),
+            )
+            .await
+            {
+                inner?;
+            } else {
+                rounds += 1;
+                println!(
+                    "Throughput: {} kbps",
+                    transmitted as f32
+                        / (1000. * (rounds * SOCKET_PERF_TIMEOUT.as_secs() as usize) as f32)
+                );
+            }
+        }
+    }
+}
+
+async fn perf_daemon(
+    write_tx: &mut UnboundedSender<AcsmaSocketWriteTask>,
+    frame: &DataFrame,
+    transmitted: &mut usize,
+) -> Result<()> {
+    loop {
+        let (tx, rx) = oneshot::channel();
+        write_tx.send((NonAckFrame::Data(frame.clone()), tx))?;
+        rx.await??;
+        *transmitted += PAYLOAD_BITS_LEN;
     }
 }
 
