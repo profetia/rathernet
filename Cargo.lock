@@ -1193,6 +1193,7 @@ dependencies = [
  "hound",
  "log",
  "num",
+ "parking_lot 0.12.1",
  "rand",
  "realfft",
  "reed-solomon-erasure",
