@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     rather::{signal::Energy, AtherInputStream, AtherOutputStream, AtherStreamConfig},
-    raudio::{AsioDevice, AudioInputStream, AudioOutputStream, ContinuousStream},
+    raudio::{AsioDevice, AudioInputStream, AudioOutputStream},
 };
 use anyhow::Result;
 use bitvec::prelude::*;
@@ -175,12 +175,13 @@ async fn socket_daemon(
     config: AcsmaSocketConfig,
     mut read_ather: AtherInputStream,
     write_ather: AtherOutputStream,
-    mut write_monitor: AudioInputStream<f32>,
+    write_monitor: AudioInputStream<f32>,
     read_tx: UnboundedSender<NonAckFrame>,
     mut write_rx: UnboundedReceiver<AcsmaSocketWriteTask>,
 ) -> Result<()> {
     let mut rng = SmallRng::from_entropy();
     let mut write_state: Option<AcsmaSocketWriteTimer> = None;
+    let mut write_monitor = AcsmaSocketWriteMonitor::new(write_monitor);
     loop {
         log::debug!("----------State machine loop----------");
         match &write_state {
@@ -336,18 +337,15 @@ async fn socket_daemon(
 
 async fn is_channel_free(
     config: &AcsmaSocketConfig,
-    write_monitor: &mut AudioInputStream<f32>,
+    write_monitor: &mut AcsmaSocketWriteMonitor,
 ) -> bool {
     let sample_rate = config.ather_config.stream_config.sample_rate().0;
-    write_monitor.resume();
-    if let Some(sample) = write_monitor.next().await {
+    if let Some(sample) = write_monitor.sample().await {
         log::debug!("Energy: {}", sample.energy(sample_rate));
         if sample.energy(sample_rate) < SOCKET_FREE_THRESHOLD {
-            write_monitor.suspend();
             return true;
         }
     }
-    write_monitor.suspend();
     false
 }
 
@@ -415,6 +413,45 @@ impl AcsmaSocketWriteTimer {
         match self {
             Self::Timeout { .. } => SOCKET_ACK_TIMEOUT,
             Self::Backoff { duration, .. } => *duration,
+        }
+    }
+}
+
+struct AcsmaSocketWriteMonitor {
+    req_tx: UnboundedSender<()>,
+    resp_rx: UnboundedReceiver<Option<Box<[f32]>>>,
+}
+
+impl AcsmaSocketWriteMonitor {
+    fn new(mut write_monitor: AudioInputStream<f32>) -> Self {
+        let (req_tx, mut req_rx) = mpsc::unbounded_channel();
+        let (resp_tx, resp_rx) = mpsc::unbounded_channel();
+
+        tokio::spawn(async move {
+            let mut sample = None;
+            loop {
+                tokio::select! {
+                    cmd = req_rx.recv() => {
+                        if cmd.is_some() && resp_tx.send(sample.clone()).is_ok() {
+                            continue;
+                        }
+                        break;
+                    },
+                    data = write_monitor.next() => {
+                        sample = data
+                    }
+                }
+            }
+        });
+
+        Self { req_tx, resp_rx }
+    }
+
+    async fn sample(&mut self) -> Option<Box<[f32]>> {
+        self.req_tx.send(()).unwrap();
+        match self.resp_rx.recv().await {
+            Some(inner) => inner,
+            None => None,
         }
     }
 }
