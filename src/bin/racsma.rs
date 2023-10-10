@@ -58,9 +58,9 @@ enum Commands {
         /// The address that will be used to send the file.
         #[clap(short, long, default_value = "0", value_parser = parse_address)]
         address: usize,
-        /// The opponent address that will receive the file.
+        /// The peer address that will receive the file.
         #[clap(short, long, default_value = "0", value_parser = parse_address)]
-        opponent: usize,
+        peer: usize,
     },
     /// Read bits from the acsma and write them to a file.
     Read {
@@ -79,9 +79,9 @@ enum Commands {
         /// The address that will be used to recieve the bits.
         #[clap(short, long, default_value = "0", value_parser = parse_address)]
         address: usize,
-        /// The opponent address that will send the bits from.
+        /// The peer address that will send the bits from.
         #[clap(short, long, default_value = "0", value_parser = parse_address)]
-        opponent: usize,
+        peer: usize,
     },
     /// Write bits from a file through the acsma while reading bits from the acsma
     Duplex {
@@ -103,9 +103,9 @@ enum Commands {
         /// The address that will be used to send the file.
         #[clap(short, long, default_value = "0", value_parser = parse_address)]
         address: usize,
-        /// The opponent address that will receive the file.
+        /// The peer address that will receive the file.
         #[clap(short, long, default_value = "0", value_parser = parse_address)]
-        opponent: usize,
+        peer: usize,
     },
 }
 
@@ -261,7 +261,7 @@ async fn main() -> Result<()> {
             device,
             chars,
             address,
-            opponent,
+            peer,
         } => {
             let device = create_device(device)?;
             let stream_config = create_stream_config(&device)?;
@@ -277,7 +277,7 @@ async fn main() -> Result<()> {
             let mut acsma_stream = AcsmaIoStream::new(stream_config, read_ather, write_ather);
 
             let bits = load_bits(source, chars)?;
-            acsma_stream.write(opponent, &bits).await?;
+            acsma_stream.write(peer, &bits).await?;
         }
         Commands::Read {
             file,
@@ -285,7 +285,7 @@ async fn main() -> Result<()> {
             chars,
             num_bits,
             address,
-            opponent,
+            peer,
         } => {
             let device = create_device(device)?;
             let stream_config = create_stream_config(&device)?;
@@ -301,7 +301,7 @@ async fn main() -> Result<()> {
             let mut acsma_stream = AcsmaIoStream::new(stream_config, read_ather, write_ather);
 
             let mut buf = bitvec![0; num_bits];
-            acsma_stream.read(opponent, &mut buf).await?;
+            acsma_stream.read(peer, &mut buf).await?;
 
             dump_bits(buf, file, chars)?;
         }
@@ -312,20 +312,20 @@ async fn main() -> Result<()> {
             chars,
             num_bits,
             address,
-            opponent,
+            peer,
         } => {
             let device = create_device(device)?;
             let stream_config = create_stream_config(&device)?;
             let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
 
-            let socket_config = AcsmaSocketConfig::new(address, opponent, ather_config);
+            let socket_config = AcsmaSocketConfig::new(address, ather_config);
             let (mut tx_socket, mut rx_socket) =
                 AcsmaIoSocket::try_from_device(socket_config, &device)?;
 
             let bits = load_bits(source, chars)?;
 
             let mut buf = bitvec![0; num_bits];
-            tokio::try_join!(tx_socket.write(&bits), rx_socket.read(&mut buf))?;
+            tokio::try_join!(tx_socket.write(peer, &bits), rx_socket.read(peer, &mut buf))?;
 
             dump_bits(buf, file, chars)?;
         }
