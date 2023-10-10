@@ -202,6 +202,33 @@ async fn socket_daemon(
                     match frame {
                         AcsmaFrame::Ack(ack) => {
                             log::debug!("Recieve ACK for index {}", header.seq);
+                            match write_state {
+                                Some(AcsmaSocketWriteTimer::Timeout { start, inner }) => {
+                                    let ack_seq = ack.header().seq;
+                                    let task_seq = inner.task.0.header().seq;
+                                    write_state = if ack_seq == task_seq {
+                                        log::debug!("Clear ACK timout {}", ack_seq);
+                                        let _ = inner.task.1.send(Ok(()));
+                                        let duration = generate_backoff(&mut rng, 0);
+                                        Some(AcsmaSocketWriteTimer::backoff(None, 0, duration))
+                                    } else {
+                                        Some(AcsmaSocketWriteTimer::Timeout { start, inner })
+                                    }
+                                }
+                                Some(AcsmaSocketWriteTimer::Backoff { inner: Some(inner), start, retry, duration}) => {
+                                    let ack_seq = ack.header().seq;
+                                    let task_seq = inner.task.0.header().seq;
+                                    write_state = if ack_seq == task_seq {
+                                        log::debug!("Clear Backoff timout {}", ack_seq);
+                                        let _ = inner.task.1.send(Ok(()));
+                                        let duration = generate_backoff(&mut rng, 0);
+                                        Some(AcsmaSocketWriteTimer::backoff(None, 0, duration))
+                                    } else {
+                                        Some(AcsmaSocketWriteTimer::Backoff { start, inner: Some(inner), retry, duration })
+                                    }
+                                },
+                                _ => {}
+                            }
                             if let Some(AcsmaSocketWriteTimer::Timeout { start, inner }) =
                                 write_state
                             {
@@ -338,7 +365,7 @@ async fn is_channel_free(
     let sample_rate = config.ather_config.stream_config.sample_rate().0;
     if let Some(sample) = write_monitor.sample().await {
         log::debug!("Energy: {}", sample.energy(sample_rate));
-        sample.energy(sample_rate) < SOCKET_FREE_THRESHOLD        
+        sample.energy(sample_rate) < SOCKET_FREE_THRESHOLD
     } else {
         log::debug!("No sample");
         true
