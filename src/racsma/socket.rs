@@ -1,8 +1,8 @@
 use super::{
     builtin::{
         PAYLOAD_BITS_LEN, SOCKET_ACK_TIMEOUT, SOCKET_FREE_THRESHOLD, SOCKET_MAX_RANGE,
-        SOCKET_MAX_RESENDS, SOCKET_PERF_TIMEOUT, SOCKET_PING_TIMEOUT, SOCKET_RECIEVE_TIMEOUT,
-        SOCKET_SLOT_TIMEOUT,
+        SOCKET_MAX_RESENDS, SOCKET_PERF_INTERVAL, SOCKET_PERF_TIMEOUT, SOCKET_PING_INTERVAL,
+        SOCKET_PING_TIMEOUT, SOCKET_RECIEVE_TIMEOUT, SOCKET_SLOT_TIMEOUT,
     },
     frame::{
         AckFrame, AcsmaFrame, DataFrame, Frame, FrameHeader, FrameType, MacPingReqFrame,
@@ -51,6 +51,8 @@ impl AcsmaSocketConfig {
 pub enum AcsmaIoError {
     #[error("Link error after {0} retries")]
     LinkError(usize),
+    #[error("Perf timeout after {0} ms")]
+    PerfTimeout(usize),
 }
 
 pub struct AcsmaSocketReader {
@@ -139,9 +141,10 @@ impl AcsmaSocketWriter {
     pub async fn ping(&mut self, dest: usize) -> Result<()> {
         let frame = NonAckFrame::MacPingReq(MacPingReqFrame::new(dest, self.config.address));
         loop {
-            let start = Instant::now();
+            time::sleep(SOCKET_PING_INTERVAL).await;
             let (tx, rx) = oneshot::channel();
             self.write_tx.send((frame.clone(), tx))?;
+            let start = Instant::now();
             if let Ok(inner) = time::timeout(SOCKET_PING_TIMEOUT, rx).await {
                 inner??;
                 println!("Ping: {} ms", start.elapsed().as_millis());
@@ -164,25 +167,42 @@ async fn perf_daemon(
     loop {
         let (tx, rx) = oneshot::channel();
         write_tx.send((NonAckFrame::Data(frame.clone()), tx))?;
-        rx.await??;
-        let _ = send_tx.send(PAYLOAD_BITS_LEN);
+        if let Ok(inner) = time::timeout(SOCKET_PERF_TIMEOUT, rx).await {
+            inner??;
+            let _ = send_tx.send(PAYLOAD_BITS_LEN);
+        } else {
+            break;
+        }
     }
+
+    Ok(())
 }
 
 async fn perf_main(mut send_rx: UnboundedReceiver<usize>) -> Result<()> {
     let mut sent = 0;
     let mut epochs = 0usize;
-    loop {
-        time::sleep(SOCKET_PERF_TIMEOUT).await;
-        while let Ok(len) = send_rx.try_recv() {
-            sent += len;
+    'a: loop {
+        time::sleep(SOCKET_PERF_INTERVAL).await;
+        loop {
+            match send_rx.try_recv() {
+                Ok(len) => sent += len,
+                Err(TryRecvError::Disconnected) => {
+                    break 'a;
+                }
+                _ => {
+                    break;
+                }
+            }
         }
+
         epochs += 1;
         println!(
             "Throughput: {} kbps",
-            sent as f32 / (1000. * SOCKET_PERF_TIMEOUT.as_secs() as f32 * epochs as f32)
+            sent as f32 / (1000. * SOCKET_PERF_INTERVAL.as_secs() as f32 * epochs as f32)
         );
     }
+
+    Err(AcsmaIoError::PerfTimeout(SOCKET_PERF_TIMEOUT.as_millis() as usize).into())
 }
 
 type AcsmaSocketWriteTask = (NonAckFrame, Sender<Result<()>>);
