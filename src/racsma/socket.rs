@@ -1,6 +1,6 @@
 use super::{
     builtin::{
-        PAYLOAD_BITS_LEN, SOCKET_ACK_TIMEOUT, SOCKET_FREE_THRESHOLD,
+        PAYLOAD_BITS_LEN, SOCKET_ACK_TIMEOUT, SOCKET_COLISION_THRESHOLD, SOCKET_FREE_THRESHOLD,
         SOCKET_MAX_RANGE, SOCKET_MAX_RESENDS, SOCKET_PERF_INTERVAL, SOCKET_PERF_TIMEOUT,
         SOCKET_PING_INTERVAL, SOCKET_PING_TIMEOUT, SOCKET_RECIEVE_TIMEOUT, SOCKET_SLOT_TIMEOUT,
     },
@@ -341,15 +341,28 @@ async fn socket_daemon(
                                 header.seq
                             );
                             let frame = inner.task.0.clone();
-                            write_ather.write(&Into::<BitVec>::into(frame)).await?;
-                            log::debug!(
-                                "Backoff timer expired. Medium state: free. Resent {}",
-                                inner.task.0.header().seq
-                            );
-                            Some(AcsmaSocketWriteTimer::timeout(
-                                inner.task,
-                                inner.resends + 1,
-                            ))
+                            if !write_bits(
+                                &config,
+                                &write_ather,
+                                &mut write_monitor,
+                                &Into::<BitVec>::into(frame),
+                            )
+                            .await?
+                            {
+                                log::debug!(
+                                    "Backoff timer expired. Medium state: free. Colision detected"
+                                );
+                                Some(create_backoff(&mut rng, inner.task, retry + 1))
+                            } else {
+                                log::debug!(
+                                    "Backoff timer expired. Medium state: free. Resent {}",
+                                    header.seq
+                                );
+                                Some(AcsmaSocketWriteTimer::timeout(
+                                    inner.task,
+                                    inner.resends + 1,
+                                ))
+                            }
                         }
                     }
                     _ => {
@@ -371,9 +384,20 @@ async fn socket_daemon(
                 } else {
                     log::debug!("Medium state: free. Sending {}", header.seq);
                     let frame = task.0.clone();
-                    write_ather.write(&Into::<BitVec>::into(frame)).await?;
-                    log::debug!("Medium state: free. Sent {}", task.0.header().seq);
-                    Some(AcsmaSocketWriteTimer::timeout(task, 0))
+                    if !write_bits(
+                        &config,
+                        &write_ather,
+                        &mut write_monitor,
+                        &Into::<BitVec>::into(frame),
+                    )
+                    .await?
+                    {
+                        log::debug!("Medium state: free. Colision detected");
+                        Some(create_backoff(&mut rng, task, 1))
+                    } else {
+                        log::debug!("Medium state: free. Sent {}", header.seq);
+                        Some(AcsmaSocketWriteTimer::timeout(task, 0))
+                    }
                 }
             } else if let Err(TryRecvError::Disconnected) = result {
                 if read_tx.is_closed() {
@@ -460,6 +484,28 @@ fn clear_timer(
     timer
 }
 
+async fn write_bits(
+    config: &AcsmaSocketConfig,
+    write_ather: &AtherOutputStream,
+    colision_monitor: &mut AcsmaSocketWriteMonitor,
+    bits: &BitSlice,
+) -> Result<bool> {
+    let sample_rate = config.ather_config.stream_config.sample_rate().0;
+    tokio::select! {
+        result = write_ather.write(bits) => result.and_then(|_| Ok(true)),
+        _ = async {
+            loop {
+                if let Some(sample) = colision_monitor.sample().await {
+                    let enery = sample.energy(sample_rate);
+                    // log::warn!("Energy {}", enery);
+                    if enery > SOCKET_COLISION_THRESHOLD {
+                        break;
+                    }
+                }
+            }
+        } => Ok(false)
+    }
+}
 enum AcsmaSocketWriteTimer {
     Timeout {
         start: Instant,
@@ -564,10 +610,15 @@ impl AcsmaSocketWriteMonitor {
     }
 
     async fn sample(&mut self) -> Option<Box<[f32]>> {
+        self.clear();
         self.req_tx.send(()).unwrap();
         match self.resp_rx.recv().await {
             Some(inner) => inner,
             None => None,
         }
+    }
+
+    fn clear(&mut self) {
+        while let Ok(_) = self.resp_rx.try_recv() {}
     }
 }
