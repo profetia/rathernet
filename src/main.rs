@@ -3,6 +3,7 @@ use bitvec::prelude::*;
 use cpal::{traits::DeviceTrait, SupportedStreamConfig};
 use rathernet::rather::builtin::PAYLOAD_BITS_LEN;
 use rathernet::rather::AtherInputStream;
+use rathernet::rather::signal::Energy;
 use rathernet::{
     rather::{AtherOutputStream, AtherStreamConfig},
     raudio::{AsioDevice, AudioInputStream, AudioOutputStream},
@@ -49,7 +50,14 @@ async fn main() -> Result<()> {
         read(&mut read_ather, &mut buf).await;
         buf
     };
-    let monitor_future = async { monitor_stream.read().await };
+    let monitor_future = async { 
+        while let Some(sample) = monitor_stream.next().await {
+            let energy = sample.energy(48000);
+            if energy > 1e-4 {
+                eprintln!("Monitor: {}", energy);
+            }
+        }
+     };
 
     let (_, mut read_buf, _) = tokio::join!(write_future, read_future, monitor_future);
 
