@@ -128,6 +128,18 @@ enum Commands {
         #[clap(short, long, default_value = "0", value_parser = parse_address)]
         address: usize,
     },
+    /// Ping a peer to check if it is alive.
+    Ping {
+        /// The device used to ping the peer.
+        #[clap(short, long)]
+        device: Option<String>,
+        /// The address that will be used to ping the peer.
+        #[clap(short, long, default_value = "0", value_parser = parse_address)]
+        address: usize,
+        /// The peer address that will be pinged.
+        #[clap(short, long, default_value = "0", value_parser = parse_address)]
+        peer: usize,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
@@ -373,6 +385,19 @@ async fn main() -> Result<()> {
             let (_, mut rx_socket) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
 
             rx_socket.serve().await?;
+        }
+        Commands::Ping {
+            device,
+            address,
+            peer,
+        } => {
+            let device = create_device(device)?;
+            let stream_config = create_stream_config(&device)?;
+            let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
+
+            let socket_config = AcsmaSocketConfig::new(address, ather_config);
+            let (mut tx_socket, _) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
+            tx_socket.ping(peer).await?;
         }
     }
     Ok(())
