@@ -124,40 +124,46 @@ impl AcsmaSocketWriter {
     }
 
     pub async fn perf(&mut self, dest: usize) -> Result<()> {
-        let bits = bitvec![usize, Lsb0; 0; PAYLOAD_BITS_LEN];
-        let frame = DataFrame::new(dest, self.config.address, 0, bits);
-        let mut transmitted = 0usize;
-        let mut rounds = 0usize;
-        loop {
-            if let Ok(inner) = time::timeout(
-                SOCKET_PERF_TIMEOUT,
-                perf_daemon(&mut self.write_tx, &frame, &mut transmitted),
-            )
-            .await
-            {
-                inner?;
-            } else {
-                rounds += 1;
-                println!(
-                    "Throughput: {} kbps",
-                    transmitted as f32
-                        / (1000. * (rounds * SOCKET_PERF_TIMEOUT.as_secs() as usize) as f32)
-                );
-            }
-        }
+        let (send_tx, send_rx) = mpsc::unbounded_channel();
+        tokio::try_join!(
+            perf_main(send_rx),
+            perf_daemon(&self.config, &mut self.write_tx, dest, send_tx)
+        )?;
+
+        Ok(())
     }
 }
 
 async fn perf_daemon(
+    config: &AcsmaSocketConfig,
     write_tx: &mut UnboundedSender<AcsmaSocketWriteTask>,
-    frame: &DataFrame,
-    transmitted: &mut usize,
+    dest: usize,
+    send_tx: UnboundedSender<usize>,
 ) -> Result<()> {
+    let bits = bitvec![usize, Lsb0; 0; PAYLOAD_BITS_LEN];
+    let frame = DataFrame::new(dest, config.address, 0, bits);
+
     loop {
         let (tx, rx) = oneshot::channel();
         write_tx.send((NonAckFrame::Data(frame.clone()), tx))?;
         rx.await??;
-        *transmitted += PAYLOAD_BITS_LEN;
+        let _ = send_tx.send(PAYLOAD_BITS_LEN);
+    }
+}
+
+async fn perf_main(mut send_rx: UnboundedReceiver<usize>) -> Result<()> {
+    let mut sent = 0;
+    let mut epochs = 0usize;
+    loop {
+        time::sleep(SOCKET_PERF_TIMEOUT).await;
+        while let Ok(len) = send_rx.try_recv() {
+            sent += len;
+        }
+        epochs += 1;
+        println!(
+            "Throughput: {} kbps",
+            sent as f32 / (1000. * SOCKET_PERF_TIMEOUT.as_secs() as f32 * epochs as f32)
+        );
     }
 }
 
