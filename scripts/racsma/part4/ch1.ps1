@@ -1,4 +1,4 @@
-git checkout -b part4 fe867da
+git checkout -b part4 b3a3011
 
 cargo build --release
 
@@ -8,15 +8,10 @@ cargo build --release
 
 # Set ASIO driver buffer size to 64
 
-# Start node 2 as the server
-./target/release/racsma serve -a 1
-# Start node 1 to start perf node 1
-./target/release/racsma perf -a 0 -p 1
-
-# Start node 1 as the server
-./target/release/racsma serve -a 0
-# Start node 2 to start perf node 2
+# Start node 2 first since it's slower
 ./target/release/racsma perf -a 1 -p 0
+# Start node 1
+./target/release/racsma perf -a 0 -p 1
 
 git checkout main
 
