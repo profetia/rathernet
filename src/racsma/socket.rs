@@ -1,9 +1,13 @@
 use super::{
     builtin::{
         PAYLOAD_BITS_LEN, SOCKET_ACK_TIMEOUT, SOCKET_FREE_THRESHOLD, SOCKET_MAX_RANGE,
-        SOCKET_MAX_RESENDS, SOCKET_PERF_TIMEOUT, SOCKET_RECIEVE_TIMEOUT, SOCKET_SLOT_TIMEOUT,
+        SOCKET_MAX_RESENDS, SOCKET_PERF_TIMEOUT, SOCKET_PING_TIMEOUT, SOCKET_RECIEVE_TIMEOUT,
+        SOCKET_SLOT_TIMEOUT,
     },
-    frame::{AckFrame, AcsmaFrame, DataFrame, Frame, NonAckFrame},
+    frame::{
+        AckFrame, AcsmaFrame, DataFrame, Frame, FrameHeader, FrameType, MacPingReqFrame,
+        MacPingRespFrame, NonAckFrame,
+    },
 };
 use crate::{
     rather::{signal::Energy, AtherInputStream, AtherOutputStream, AtherStreamConfig},
@@ -15,6 +19,7 @@ use log;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use std::{
     collections::BTreeMap,
+    mem,
     time::{Duration, Instant},
 };
 use thiserror::Error;
@@ -59,17 +64,15 @@ impl AcsmaSocketReader {
             let header = frame.header().clone();
             log::info!("Receive frame {}, total {}", header.seq, total_len);
             if src == header.src {
-                match frame {
-                    NonAckFrame::Data(data) => {
-                        let payload = data.payload().unwrap();
-                        bucket.entry(header.seq).or_insert_with(|| {
-                            total_len += payload.len();
-                            payload.to_owned()
-                        });
+                if let NonAckFrame::Data(data) = frame {
+                    let payload = data.payload().unwrap();
+                    bucket.entry(header.seq).or_insert_with(|| {
+                        total_len += payload.len();
+                        payload.to_owned()
+                    });
 
-                        if total_len >= buf.len() {
-                            break;
-                        }
+                    if total_len >= buf.len() {
+                        break;
                     }
                 }
             }
@@ -131,6 +134,21 @@ impl AcsmaSocketWriter {
         )?;
 
         Ok(())
+    }
+
+    pub async fn ping(&mut self, dest: usize) -> Result<()> {
+        let frame = NonAckFrame::MacPingReq(MacPingReqFrame::new(dest, self.config.address));
+        loop {
+            let start = Instant::now();
+            let (tx, rx) = oneshot::channel();
+            self.write_tx.send((frame.clone(), tx))?;
+            if let Ok(inner) = time::timeout(SOCKET_PING_TIMEOUT, rx).await {
+                inner??;
+                println!("Ping: {} ms", start.elapsed().as_millis());
+            } else {
+                println!("Ping: timeout");
+            }
+        }
     }
 }
 
@@ -246,69 +264,34 @@ async fn socket_daemon(
                 log::debug!("Recieve raw frame with index {}", header.seq);
                 if header.dest == config.address {
                     match frame {
-                        AcsmaFrame::Ack(ack) => {
-                            log::debug!("Recieve ACK for index {}", header.seq);
-                            match write_state {
-                                Some(AcsmaSocketWriteTimer::Timeout { start, inner }) => {
-                                    let ack_seq = ack.header().seq;
-                                    let task_seq = inner.task.0.header().seq;
-                                    write_state = if ack_seq == task_seq {
-                                        log::debug!("Clear ACK timout {}", ack_seq);
-                                        let _ = inner.task.1.send(Ok(()));
-                                        let duration = generate_backoff(&mut rng, 0);
-                                        Some(AcsmaSocketWriteTimer::backoff(None, 0, duration))
-                                    } else {
-                                        Some(AcsmaSocketWriteTimer::Timeout { start, inner })
-                                    }
+                        AcsmaFrame::NonAck(non_ack) => {
+                            let bits = match non_ack {
+                                NonAckFrame::Data(_) => {
+                                    log::debug!("Receive data for index {}", header.seq);
+                                    Into::<BitVec>::into(AckFrame::new(
+                                        header.src,
+                                        header.dest,
+                                        header.seq,
+                                    ))
                                 }
-                                Some(AcsmaSocketWriteTimer::Backoff {
-                                    inner: Some(inner),
-                                    start,
-                                    retry,
-                                    duration,
-                                }) => {
-                                    let ack_seq = ack.header().seq;
-                                    let task_seq = inner.task.0.header().seq;
-                                    write_state = if ack_seq == task_seq {
-                                        log::debug!("Clear Backoff timout {}", ack_seq);
-                                        let _ = inner.task.1.send(Ok(()));
-                                        let duration = generate_backoff(&mut rng, 0);
-                                        Some(AcsmaSocketWriteTimer::backoff(None, 0, duration))
-                                    } else {
-                                        Some(AcsmaSocketWriteTimer::Backoff {
-                                            start,
-                                            inner: Some(inner),
-                                            retry,
-                                            duration,
-                                        })
-                                    }
+                                NonAckFrame::MacPingReq(_) => {
+                                    log::debug!("Receive MacPingReq for index {}", header.seq);
+                                    Into::<BitVec>::into(MacPingRespFrame::new(
+                                        header.src,
+                                        header.dest,
+                                    ))
                                 }
-                                _ => {}
-                            }
-                            if let Some(AcsmaSocketWriteTimer::Timeout { start, inner }) =
-                                write_state
-                            {
-                                let ack_seq = ack.header().seq;
-                                let task_seq = inner.task.0.header().seq;
-                                if ack_seq == task_seq {
-                                    log::debug!("Clear ACK timout {}", ack_seq);
-                                    let _ = inner.task.1.send(Ok(()));
-                                    let duration = generate_backoff(&mut rng, 0);
-                                    write_state =
-                                        Some(AcsmaSocketWriteTimer::backoff(None, 0, duration));
-                                } else {
-                                    write_state =
-                                        Some(AcsmaSocketWriteTimer::Timeout { start, inner })
-                                }
-                            }
+                            };
+                            log::debug!("Sending ACK | MacPingResp for index {}", header.seq);
+                            write_ather.write(&bits).await?;
+                            log::debug!("Sent ACK | MacPingResp for index {}", header.seq);
+                            let _ = read_tx.send(non_ack);
                         }
-                        AcsmaFrame::NonAck(data) => {
-                            log::debug!("Receive data for index {}", header.seq);
-                            let ack = AckFrame::new(header.src, header.dest, header.seq);
-                            log::debug!("Sending ACK for index {}", header.seq);
-                            write_ather.write(&Into::<BitVec>::into(ack)).await?;
-                            log::debug!("Sent ACK for index {}", header.seq);
-                            let _ = read_tx.send(data);
+                        _ => {
+                            log::debug!("Recieve ACK | MacPingResp for index {}", header.seq);
+                            if let Some(timer) = write_state {
+                                write_state = Some(clear_timer(&mut rng, &header, timer));
+                            }
                         }
                     }
                 } else {
@@ -426,6 +409,45 @@ async fn is_channel_free(
         log::debug!("No sample");
         true
     }
+}
+
+fn clear_timer(
+    rng: &mut SmallRng,
+    header: &FrameHeader,
+    mut timer: AcsmaSocketWriteTimer,
+) -> AcsmaSocketWriteTimer {
+    let inner = match &timer {
+        AcsmaSocketWriteTimer::Timeout { inner, .. } => Some(inner),
+        AcsmaSocketWriteTimer::Backoff {
+            inner: Some(inner), ..
+        } => Some(inner),
+        _ => None,
+    };
+    if let Some(inner) = inner {
+        let is_data_ack =
+            matches!(inner.task.0, NonAckFrame::Data(_)) && header.r#type == FrameType::Ack.bits();
+        let is_macping_req_resp = matches!(inner.task.0, NonAckFrame::MacPingReq(_))
+            && header.r#type == FrameType::MacPingResp.bits();
+        if (is_data_ack || is_macping_req_resp) && header.seq == inner.task.0.header().seq {
+            let duration = generate_backoff(rng, 0);
+            match mem::replace(
+                &mut timer,
+                AcsmaSocketWriteTimer::backoff(None, 0, duration),
+            ) {
+                AcsmaSocketWriteTimer::Timeout { inner, .. } => {
+                    let _ = inner.task.1.send(Ok(()));
+                    log::debug!("Clear ACK timeout {}", header.seq);
+                }
+                AcsmaSocketWriteTimer::Backoff { inner, .. } => {
+                    let _ = inner.unwrap().task.1.send(Ok(()));
+                    log::debug!("Clear Backoff timeout {}", header.seq);
+                }
+            }
+            return timer;
+        }
+    }
+
+    timer
 }
 
 enum AcsmaSocketWriteTimer {

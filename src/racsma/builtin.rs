@@ -41,3 +41,4 @@ pub const SOCKET_FREE_THRESHOLD: f32 = 1e-4;
 pub const SOCKET_COLLISSION_THRESHOLD: f32 = 0.5;
 
 pub const SOCKET_PERF_TIMEOUT: Duration = Duration::from_millis(1000);
+pub const SOCKET_PING_TIMEOUT: Duration = Duration::from_millis(2000);
