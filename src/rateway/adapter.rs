@@ -5,6 +5,7 @@ use crate::{
 };
 use anyhow::Result;
 use futures::{
+    future::LocalBoxFuture,
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
@@ -52,7 +53,7 @@ impl AtewayAdapterConfig {
 pub struct AtewayIoAdaper {
     config: AtewayAdapterConfig,
     device: AsioDevice,
-    inner: Option<AtewayAdapterInner>,
+    inner: Option<LocalBoxFuture<'static, Result<()>>>,
 }
 
 impl AtewayIoAdaper {
@@ -86,8 +87,6 @@ impl Future for AtewayIoAdaper {
         }
     }
 }
-
-type AtewayAdapterInner = Pin<Box<dyn Future<Output = Result<()>>>>;
 
 async fn adapter_daemon(config: AtewayAdapterConfig, device: AsioDevice) -> Result<()> {
     let (tx_socket, rx_socket) =
@@ -166,7 +165,7 @@ async fn send_daemon(
     Ok(())
 }
 
-async fn create_reply(
+pub async fn create_reply(
     id: u16,
     src: Ipv4Addr,
     dest: Ipv4Addr,

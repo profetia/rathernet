@@ -6,7 +6,7 @@ use rathernet::{
     racsma::AcsmaSocketConfig,
     rateway::{
         builtin::{CALIBRATE_BUFFER_SIZE, CALIBRATE_SEND_INTERVAL},
-        AtewayAdapterConfig, AtewayIoAdaper, AtewayNatConfig,
+        AtewayAdapterConfig, AtewayIoAdaper, AtewayIoNat, AtewayNatConfig,
     },
     rather::AtherStreamConfig,
     raudio::AsioDevice,
@@ -46,6 +46,12 @@ enum SubCommand {
     Install {
         /// The path to the configuration file.
         #[clap(short, long, default_value = "rateway.toml")]
+        config: String,
+    },
+    /// Start an NAT server on the athernet.
+    Nat {
+        /// The path to the configuration file.
+        #[clap(short, long, default_value = "nat.toml")]
         config: String,
     },
 }
@@ -112,6 +118,18 @@ async fn main() -> Result<()> {
             let adapter_config = translate_adapter(config, ather_config);
             let adapter = AtewayIoAdaper::new(adapter_config, device);
             adapter.await?;
+        }
+        SubCommand::Nat { config } => {
+            let config = fs::read_to_string(config)?;
+            let config: RatewayNatConfig = toml::from_str(&config)?;
+
+            let device = create_device(&config.socket_config.device)?;
+            let stream_config = create_stream_config(&device)?;
+            let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
+
+            let nat_config = translate_nat(config, ather_config);
+            let nat = AtewayIoNat::new(nat_config, device);
+            nat.await?;
         }
     }
 
