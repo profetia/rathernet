@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use cpal::SupportedStreamConfig;
+use env_logger;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use rathernet::{
     racsma::AcsmaSocketConfig,
@@ -85,6 +86,7 @@ fn create_stream_config(device: &AsioDevice) -> Result<SupportedStreamConfig> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::init();
     let cli = RatewayCli::parse();
     match cli.subcmd {
         SubCommand::Calibrate {
