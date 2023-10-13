@@ -7,16 +7,18 @@ use bitvec::prelude::*;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FrameType {
-    Data = 0b0000_0000,
-    Ack = 0b0000_0001,
-    MacPingReq = 0b0000_0010,
-    MacPingResp = 0b0000_0011,
-}
+pub struct FrameType(usize);
 
 impl FrameType {
-    pub const fn bits(self) -> usize {
-        self as usize
+    pub const DATA: Self = Self(0b0000_0000);
+    pub const ACK: Self = Self(0b0000_0001);
+    pub const MAC_PING_REQ: Self = Self(0b0000_0010);
+    pub const MAC_PING_RESP: Self = Self(0b0000_0011);
+}
+
+impl From<FrameType> for usize {
+    fn from(value: FrameType) -> Self {
+        value.0
     }
 }
 
@@ -75,7 +77,7 @@ impl DataFrame {
                 dest,
                 src,
                 seq,
-                r#type: FrameType::Data.bits(),
+                r#type: FrameType::DATA.into(),
             },
             payload,
         }
@@ -138,10 +140,10 @@ impl TryFrom<BitVec> for DataFrame {
         let header = FrameHeader::from(
             &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
         );
-        if header.r#type != FrameType::Data.bits() {
+        if header.r#type != FrameType::DATA.into() {
             return Err(FrameDecodeError::UnexpectedFrameType(
                 header.r#type,
-                FrameType::Data.bits(),
+                FrameType::DATA.into(),
             )
             .into());
         }
@@ -164,7 +166,7 @@ impl AckFrame {
                 dest,
                 src,
                 seq,
-                r#type: FrameType::Ack.bits(),
+                r#type: FrameType::ACK.into(),
             },
         }
     }
@@ -200,10 +202,10 @@ impl TryFrom<BitVec> for AckFrame {
         let header = FrameHeader::from(
             &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
         );
-        if header.r#type != FrameType::Ack.bits() {
+        if header.r#type != FrameType::ACK.into() {
             return Err(FrameDecodeError::UnexpectedFrameType(
                 header.r#type,
-                FrameType::Ack.bits(),
+                FrameType::ACK.into(),
             )
             .into());
         }
@@ -223,7 +225,7 @@ impl MacPingReqFrame {
                 dest,
                 src,
                 seq: 0,
-                r#type: FrameType::MacPingReq.bits(),
+                r#type: FrameType::MAC_PING_REQ.into(),
             },
         }
     }
@@ -259,10 +261,10 @@ impl TryFrom<BitVec> for MacPingReqFrame {
         let header = FrameHeader::from(
             &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
         );
-        if header.r#type != FrameType::MacPingReq.bits() {
+        if header.r#type != FrameType::MAC_PING_REQ.into() {
             return Err(FrameDecodeError::UnexpectedFrameType(
                 header.r#type,
-                FrameType::MacPingReq.bits(),
+                FrameType::MAC_PING_REQ.into(),
             )
             .into());
         }
@@ -282,7 +284,7 @@ impl MacPingRespFrame {
                 dest,
                 src,
                 seq: 0,
-                r#type: FrameType::MacPingResp.bits(),
+                r#type: FrameType::MAC_PING_RESP.into(),
             },
         }
     }
@@ -318,10 +320,10 @@ impl TryFrom<BitVec> for MacPingRespFrame {
         let header = FrameHeader::from(
             &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
         );
-        if header.r#type != FrameType::MacPingResp.bits() {
+        if header.r#type != FrameType::MAC_PING_RESP.into() {
             return Err(FrameDecodeError::UnexpectedFrameType(
                 header.r#type,
-                FrameType::MacPingResp.bits(),
+                FrameType::MAC_PING_RESP.into(),
             )
             .into());
         }
@@ -355,9 +357,9 @@ impl TryFrom<BitVec> for AcsmaFrame {
             &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
         );
 
-        if header.r#type == FrameType::Ack.bits() {
+        if header.r#type == FrameType::ACK.into() {
             Ok(AcsmaFrame::Ack(AckFrame { header }))
-        } else if header.r#type == FrameType::MacPingResp.bits() {
+        } else if header.r#type == FrameType::MAC_PING_RESP.into() {
             Ok(AcsmaFrame::MacPingResp(MacPingRespFrame { header }))
         } else {
             Ok(AcsmaFrame::NonAck(NonAckFrame::try_from_bitvec_unchecked(
@@ -397,21 +399,28 @@ impl NonAckFrame {
             &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
         );
 
-        if header.r#type == FrameType::Data.bits() {
+        if header.r#type == FrameType::DATA.into() {
             let payload = value[ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN
                 ..value.len() - PARITY_BITS_LEN]
                 .to_owned();
             Ok(NonAckFrame::Data(DataFrame { header, payload }))
-        } else if header.r#type == FrameType::MacPingReq.bits() {
+        } else if header.r#type == FrameType::MAC_PING_REQ.into() {
             Ok(NonAckFrame::MacPingReq(MacPingReqFrame { header }))
-        } else if header.r#type == FrameType::Ack.bits() {
+        } else if header.r#type == FrameType::ACK.into() {
             return Err(FrameDecodeError::UnexpectedFrameType(
                 header.r#type,
-                FrameType::Data.bits(),
+                FrameType::DATA.into(),
             )
             .into());
         } else {
             Err(FrameDecodeError::UnknownFrameType(header.r#type).into())
+        }
+    }
+
+    pub fn corresponds(&self, other: &FrameHeader) -> bool {
+        match self {
+            NonAckFrame::Data(_) => other.r#type == FrameType::DATA.into(),
+            NonAckFrame::MacPingReq(_) => other.r#type == FrameType::MAC_PING_REQ.into(),
         }
     }
 }
