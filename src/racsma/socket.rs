@@ -1,6 +1,6 @@
 use super::{
     builtin::{
-        PAYLOAD_BITS_LEN, SOCKET_ACK_TIMEOUT, SOCKET_COLISION_THRESHOLD, SOCKET_FREE_THRESHOLD,
+        PAYLOAD_BITS_LEN, SOCKET_ACK_TIMEOUT, SOCKET_BROADCAST_ADDRESS, SOCKET_FREE_THRESHOLD,
         SOCKET_MAX_RANGE, SOCKET_MAX_RESENDS, SOCKET_PERF_INTERVAL, SOCKET_PERF_TIMEOUT,
         SOCKET_PING_INTERVAL, SOCKET_PING_TIMEOUT, SOCKET_RECIEVE_TIMEOUT, SOCKET_SLOT_TIMEOUT,
     },
@@ -348,7 +348,7 @@ async fn socket_daemon(
             if let Ok(frame) = AcsmaFrame::try_from(bits) {
                 let header = frame.header().clone();
                 log::debug!("Recieve raw frame with index {}", header.seq);
-                if header.dest == config.address {
+                if is_for_self(&config, &header) {
                     match frame {
                         AcsmaFrame::NonAck(non_ack) => {
                             let bits = create_resp(&header, &non_ack);
@@ -444,6 +444,10 @@ async fn socket_daemon(
         }
     }
     Ok(())
+}
+
+fn is_for_self(config: &AcsmaSocketConfig, header: &FrameHeader) -> bool {
+    header.dest == config.address || header.dest == SOCKET_BROADCAST_ADDRESS
 }
 
 fn create_backoff(
