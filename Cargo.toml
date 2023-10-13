@@ -25,6 +25,7 @@ socket2 = "0.5.4"
 thiserror = "1.0.48"
 tokio = { version = "1.32.0", features = ["full"] }
 tokio-stream = "0.1.14"
+toml = "0.8.2"
 tun = { version = "0.6.1", features = ["async"] }
 
 [patch.crates-io]
