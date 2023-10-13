@@ -23,6 +23,7 @@ rodio = "0.17.1"
 thiserror = "1.0.48"
 tokio = { version = "1.32.0", features = ["full"] }
 tokio-stream = "0.1.14"
+tun = { version = "0.6.1", features = ["async"] }
 
 [patch.crates-io]
 cpal = { git = "https://github.com/RustAudio/cpal.git", rev = "f51589c" }
