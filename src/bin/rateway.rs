@@ -6,7 +6,7 @@ use rathernet::{
     racsma::AcsmaSocketConfig,
     rateway::{
         builtin::{CALIBRATE_BUFFER_SIZE, CALIBRATE_SEND_INTERVAL},
-        AtewayAdapterConfig, AtewayIoAdaper,
+        AtewayAdapterConfig, AtewayIoAdaper, AtewayNatConfig,
     },
     rather::AtherStreamConfig,
     raudio::AsioDevice,
@@ -103,13 +103,13 @@ async fn main() -> Result<()> {
         }
         SubCommand::Install { config } => {
             let config = fs::read_to_string(config)?;
-            let config: RatewayConfig = toml::from_str(&config)?;
+            let config: RatewayAdapterConfig = toml::from_str(&config)?;
 
             let device = create_device(&config.socket_config.device)?;
             let stream_config = create_stream_config(&device)?;
             let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
 
-            let adapter_config = translate(config, ather_config);
+            let adapter_config = translate_adapter(config, ather_config);
             let adapter = AtewayIoAdaper::new(adapter_config, device);
             adapter.await?;
         }
@@ -140,12 +140,10 @@ async fn calibrate_receive(socket: &UdpSocket, dest: &SocketAddr) -> Result<()> 
 }
 
 #[derive(Clone, Deserialize, Debug)]
-struct RatewayConfig {
+struct RatewayAdapterConfig {
     name: String,
     #[serde(rename = "ip")]
     address: Ipv4Addr,
-    #[serde(deserialize_with = "deserialize_port")]
-    port: u16,
     netmask: Ipv4Addr,
     gateway: Ipv4Addr,
     #[serde(rename = "socket")]
@@ -159,13 +157,37 @@ struct RatewaySocketConfig {
     device: Option<String>,
 }
 
-fn translate(config: RatewayConfig, ather_config: AtherStreamConfig) -> AtewayAdapterConfig {
+#[derive(Clone, Deserialize, Debug)]
+struct RatewayNatConfig {
+    name: String,
+    #[serde(rename = "ip")]
+    address: Ipv4Addr,
+    #[serde(deserialize_with = "deserialize_port")]
+    port: u16,
+    netmask: Ipv4Addr,
+    #[serde(rename = "socket")]
+    socket_config: RatewaySocketConfig,
+}
+
+fn translate_adapter(
+    config: RatewayAdapterConfig,
+    ather_config: AtherStreamConfig,
+) -> AtewayAdapterConfig {
     AtewayAdapterConfig::new(
+        config.name,
+        config.address,
+        config.netmask,
+        config.gateway,
+        AcsmaSocketConfig::new(config.socket_config.address, ather_config),
+    )
+}
+
+fn translate_nat(config: RatewayNatConfig, ather_config: AtherStreamConfig) -> AtewayNatConfig {
+    AtewayNatConfig::new(
         config.name,
         config.address,
         config.port,
         config.netmask,
-        config.gateway,
         AcsmaSocketConfig::new(config.socket_config.address, ather_config),
     )
 }

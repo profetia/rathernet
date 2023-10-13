@@ -26,7 +26,6 @@ use tun::{AsyncDevice, Configuration, TunPacket, TunPacketCodec};
 pub struct AtewayAdapterConfig {
     pub name: String,
     pub address: Ipv4Addr,
-    pub port: u16,
     pub netmask: Ipv4Addr,
     pub gateway: Ipv4Addr,
     pub socket_config: AcsmaSocketConfig,
@@ -36,7 +35,6 @@ impl AtewayAdapterConfig {
     pub fn new(
         name: String,
         address: Ipv4Addr,
-        port: u16,
         netmask: Ipv4Addr,
         gateway: Ipv4Addr,
         socket_config: AcsmaSocketConfig,
@@ -44,7 +42,6 @@ impl AtewayAdapterConfig {
         Self {
             name,
             address,
-            port,
             netmask,
             gateway,
             socket_config,
