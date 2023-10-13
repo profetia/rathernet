@@ -106,6 +106,7 @@ impl AcsmaSocketReader {
                         }
                     }
                     AcsmaSocketReadPacketState::Reading(ref mut bucket) => {
+                        log::info!("Receive frame {}", header.seq);
                         if let NonAckFrame::PacketEnd(_) = frame {
                             break;
                         } else if let NonAckFrame::Data(data) = frame {
@@ -118,6 +119,7 @@ impl AcsmaSocketReader {
         }
 
         if let AcsmaSocketReadPacketState::Reading(bucket) = state {
+            log::info!("Read {} frames", bucket.len());
             return Ok(bucket
                 .into_iter()
                 .fold(BitVec::new(), |mut acc, (_, payload)| {
@@ -145,7 +147,7 @@ enum AcsmaSocketReadPacketState {
 
 impl AcsmaSocketReadPacketState {
     fn begin(&mut self) {
-        *self = Self::Pending;
+        *self = Self::Reading(BTreeMap::new());
     }
 }
 
@@ -180,12 +182,14 @@ impl AcsmaSocketWriter {
         self.write_tx.send((NonAckFrame::PacketBegin(begin), tx))?;
         rx.await??;
 
+        log::info!("Writing packet begin");
         self.write(dest, bits).await?;
 
         let end = PacketEndFrame::new(dest, self.config.address);
         let (tx, rx) = oneshot::channel();
         self.write_tx.send((NonAckFrame::PacketEnd(end), tx))?;
         rx.await??;
+        log::info!("Wrote packet end");
 
         Ok(())
     }
