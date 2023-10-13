@@ -1163,6 +1163,7 @@ dependencies = [
  "realfft",
  "reed-solomon-erasure",
  "rodio",
+ "socket2",
  "thiserror",
  "tokio",
  "tokio-stream",
