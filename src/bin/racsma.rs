@@ -352,7 +352,7 @@ async fn main() -> Result<()> {
             let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
 
             let socket_config = AcsmaSocketConfig::new(address, ather_config);
-            let (mut tx_socket, mut rx_socket) =
+            let (tx_socket, mut rx_socket) =
                 AcsmaIoSocket::try_from_device(socket_config, &device)?;
 
             let bits = load_bits(source, chars)?;
@@ -372,7 +372,7 @@ async fn main() -> Result<()> {
             let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
 
             let socket_config = AcsmaSocketConfig::new(address, ather_config);
-            let (mut tx_socket, _) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
+            let (tx_socket, _) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
 
             tx_socket.perf(peer).await?;
         }
@@ -396,7 +396,7 @@ async fn main() -> Result<()> {
             let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
 
             let socket_config = AcsmaSocketConfig::new(address, ather_config);
-            let (mut tx_socket, _) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
+            let (tx_socket, _) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
             tx_socket.ping(peer).await?;
         }
     }
