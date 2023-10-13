@@ -44,3 +44,5 @@ pub const SOCKET_PERF_INTERVAL: Duration = Duration::from_millis(1000);
 pub const SOCKET_PERF_TIMEOUT: Duration = Duration::from_millis(4000);
 pub const SOCKET_PING_INTERVAL: Duration = Duration::from_millis(4000);
 pub const SOCKET_PING_TIMEOUT: Duration = Duration::from_millis(2000);
+
+pub const SOCKET_BROADCAST_ADDRESS: usize = (1 << ADDRESS_BITS_LEN) - 1;
