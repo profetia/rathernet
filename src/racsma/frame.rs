@@ -100,11 +100,7 @@ impl From<DataFrame> for BitVec {
     fn from(value: DataFrame) -> Self {
         let mut frame = BitVec::from(value.header);
         frame.extend(value.payload);
-
-        let bytes = DecodeToBytes::decode(&frame);
-        let parity = PARITY_ALGORITHM.checksum(&bytes) as usize;
-        frame.extend(&parity.view_bits::<Lsb0>()[..PARITY_BITS_LEN]);
-
+        frame.extend(checksum(&frame));
         frame
     }
 }
@@ -514,6 +510,10 @@ impl NonAckFrame {
             Ok(NonAckFrame::Data(DataFrame { header, payload }))
         } else if header.r#type == FrameType::MAC_PING_REQ.into() {
             Ok(NonAckFrame::MacPingReq(MacPingReqFrame { header }))
+        } else if header.r#type == FrameType::PACKET_BEGIN.into() {
+            Ok(NonAckFrame::PacketBegin(PacketBeginFrame { header }))
+        } else if header.r#type == FrameType::PACKET_END.into() {
+            Ok(NonAckFrame::PacketEnd(PacketEndFrame { header }))
         } else if header.r#type == FrameType::ACK.into() {
             return Err(FrameDecodeError::UnexpectedFrameType(
                 header.r#type,
