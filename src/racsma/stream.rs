@@ -60,9 +60,9 @@ impl AcsmaIoStream {
             let mut retry = 0usize;
             log::info!("Writing frame {}", index);
             loop {
-                log::debug!("Sending frame {} for the {} time", index, retry);
+                // log::debug!("Sending frame {} for the {} time", index, retry);
                 self.ostream.write(&frame).await?;
-                log::debug!("Sent frame {} for the {} time", index, retry);
+                // log::debug!("Sent frame {} for the {} time", index, retry);
                 let ack_future = async {
                     while let Some(bits) = self.istream.next().await {
                         if let Ok(frame) = AckFrame::try_from(bits) {
@@ -71,7 +71,7 @@ impl AcsmaIoStream {
                                 && header.dest == self.config.address
                                 && header.seq == index
                             {
-                                log::debug!("Recieve ACK for index {}", header.seq);
+                                // log::debug!("Recieve ACK for index {}", header.seq);
                                 break;
                             }
                         }
@@ -80,7 +80,7 @@ impl AcsmaIoStream {
                 if time::timeout(SOCKET_ACK_TIMEOUT, ack_future).await.is_ok() {
                     break;
                 } else {
-                    log::debug!("Timeout ACK for index");
+                    // log::debug!("Timeout ACK for index");
                     retry += 1;
                     if retry >= SOCKET_MAX_RESENDS {
                         return Err(AcsmaIoError::LinkError(retry).into());
@@ -96,19 +96,19 @@ impl AcsmaIoStream {
     pub async fn read(&mut self, src: usize, buf: &mut BitSlice) -> Result<()> {
         let (mut bucket, mut total_len) = (BTreeMap::new(), 0usize);
         while let Some(bits) = self.istream.next().await {
-            log::debug!("Got frame {}", bits.len());
+            // log::debug!("Got frame {}", bits.len());
             if let Ok(frame) = DataFrame::try_from(bits) {
                 let header = frame.header();
                 if header.src == src && header.dest == self.config.address {
-                    log::debug!("Recieve frame with index {}", header.seq);
+                    // log::debug!("Recieve frame with index {}", header.seq);
                     let ack = AckFrame::new(header.src, header.dest, header.seq);
-                    log::debug!("Sending ACK for index {}", header.seq);
+                    // log::debug!("Sending ACK for index {}", header.seq);
                     self.ostream.write(&Into::<BitVec>::into(ack)).await?;
-                    log::debug!(
-                        "Sent ACK for index {}, total recieved {}",
-                        header.seq,
-                        total_len
-                    );
+                    // log::debug!(
+                    //     "Sent ACK for index {}, total recieved {}",
+                    //     header.seq,
+                    //     total_len
+                    // );
 
                     let payload = frame.payload().unwrap();
                     bucket.entry(header.seq).or_insert_with(|| {
