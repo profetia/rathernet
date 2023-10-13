@@ -1,7 +1,17 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
+use cpal::SupportedStreamConfig;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
-use rathernet::rateway::builtin::{CALIBRATE_BUFFER_SIZE, CALIBRATE_SEND_INTERVAL};
+use rathernet::{
+    racsma::AcsmaSocketConfig,
+    rateway::{
+        builtin::{CALIBRATE_BUFFER_SIZE, CALIBRATE_SEND_INTERVAL},
+        AtewayAdapterConfig, AtewayIoAdaper,
+    },
+    rather::AtherStreamConfig,
+    raudio::AsioDevice,
+};
+use rodio::DeviceTrait;
 use serde::{de::Error, Deserialize};
 use std::{
     fs,
@@ -47,6 +57,26 @@ enum CalibrateType {
     Duplex,
 }
 
+fn create_device(device: &Option<String>) -> Result<AsioDevice> {
+    let device = match device {
+        Some(name) => AsioDevice::try_from_name(name)?,
+        None => AsioDevice::try_default()?,
+    };
+    Ok(device)
+}
+
+fn create_stream_config(device: &AsioDevice) -> Result<SupportedStreamConfig> {
+    let device_config = device.0.default_output_config()?;
+    let stream_config = SupportedStreamConfig::new(
+        1,
+        cpal::SampleRate(48000),
+        device_config.buffer_size().clone(),
+        device_config.sample_format(),
+    );
+
+    Ok(stream_config)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = RatewayCli::parse();
@@ -74,7 +104,14 @@ async fn main() -> Result<()> {
         SubCommand::Install { config } => {
             let config = fs::read_to_string(config)?;
             let config: RatewayConfig = toml::from_str(&config)?;
-            println!("{:?}", config);
+
+            let device = create_device(&config.socket_config.device)?;
+            let stream_config = create_stream_config(&device)?;
+            let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
+
+            let adapter_config = translate(config, ather_config);
+            let adapter = AtewayIoAdaper::new(adapter_config, device);
+            adapter.await?;
         }
     }
 
@@ -119,6 +156,18 @@ struct RatewayConfig {
 struct RatewaySocketConfig {
     #[serde(rename = "mac", deserialize_with = "deserialize_mac")]
     address: usize,
+    device: Option<String>,
+}
+
+fn translate(config: RatewayConfig, ather_config: AtherStreamConfig) -> AtewayAdapterConfig {
+    AtewayAdapterConfig::new(
+        config.name,
+        config.address,
+        config.port,
+        config.netmask,
+        config.gateway,
+        AcsmaSocketConfig::new(config.socket_config.address, ather_config),
+    )
 }
 
 fn deserialize_port<'de, D>(deserializer: D) -> Result<u16, D::Error>
