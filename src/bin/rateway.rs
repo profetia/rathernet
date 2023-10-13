@@ -1,7 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use cpal::SupportedStreamConfig;
-use env_logger;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use rathernet::{
     racsma::AcsmaSocketConfig,

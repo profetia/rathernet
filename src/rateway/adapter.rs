@@ -120,6 +120,7 @@ async fn receive_daemon(
 ) -> Result<()> {
     while let Ok(packet) = rx_socket.read_packet_unchecked().await {
         let bytes = DecodeToBytes::decode(&packet);
+        log::debug!("Receive packet: {}", bytes.len());
         if let Ok(ip::Packet::V4(packet)) = ip::Packet::new(&bytes) {
             let src = packet.source();
             let dest = packet.destination();
@@ -152,6 +153,7 @@ async fn send_daemon(
 ) -> Result<()> {
     while let Some(Ok(packet)) = rx_tun.next().await {
         let bytes = packet.get_bytes();
+        log::debug!("Receive packet: {}", bytes.len());
         if let Ok(ip::Packet::V4(packet)) = ip::Packet::new(bytes) {
             let src = packet.source();
             let dest = packet.destination();
