@@ -94,7 +94,7 @@ impl AcsmaSocketReader {
         Ok(())
     }
 
-    pub(crate) async fn read_packet(&mut self, src: usize) -> Result<BitVec> {
+    pub async fn read_packet(&mut self, src: usize) -> Result<BitVec> {
         let mut state = AcsmaSocketReadPacketState::Pending;
         while let Some(frame) = self.read_rx.recv().await {
             let header = frame.header().clone();
@@ -120,6 +120,40 @@ impl AcsmaSocketReader {
 
         if let AcsmaSocketReadPacketState::Reading(bucket) = state {
             log::info!("Read {} frames", bucket.len());
+            return Ok(bucket
+                .into_iter()
+                .fold(BitVec::new(), |mut acc, (_, payload)| {
+                    acc.extend_from_bitslice(&payload);
+                    acc
+                }));
+        }
+
+        unreachable!()
+    }
+
+    pub(crate) async fn read_packet_unchecked(&mut self) -> Result<BitVec> {
+        let mut state = AcsmaSocketReadPacketState::Pending;
+        while let Some(frame) = self.read_rx.recv().await {
+            let header = frame.header().clone();
+
+            match &mut state {
+                AcsmaSocketReadPacketState::Pending => {
+                    if let NonAckFrame::PacketBegin(_) = frame {
+                        state.begin();
+                    }
+                }
+                AcsmaSocketReadPacketState::Reading(ref mut bucket) => {
+                    if let NonAckFrame::PacketEnd(_) = frame {
+                        break;
+                    } else if let NonAckFrame::Data(data) = frame {
+                        let payload = data.payload().unwrap();
+                        bucket.entry(header.seq).or_insert(payload.to_owned());
+                    }
+                }
+            }
+        }
+
+        if let AcsmaSocketReadPacketState::Reading(bucket) = state {
             return Ok(bucket
                 .into_iter()
                 .fold(BitVec::new(), |mut acc, (_, payload)| {
@@ -176,7 +210,7 @@ impl AcsmaSocketWriter {
         Ok(())
     }
 
-    pub(crate) async fn write_packet(&mut self, dest: usize, bits: &BitSlice) -> Result<()> {
+    pub async fn write_packet(&mut self, dest: usize, bits: &BitSlice) -> Result<()> {
         let begin = PacketBeginFrame::new(dest, self.config.address);
         let (tx, rx) = oneshot::channel();
         self.write_tx.send((NonAckFrame::PacketBegin(begin), tx))?;
@@ -186,6 +220,24 @@ impl AcsmaSocketWriter {
         self.write(dest, bits).await?;
 
         let end = PacketEndFrame::new(dest, self.config.address);
+        let (tx, rx) = oneshot::channel();
+        self.write_tx.send((NonAckFrame::PacketEnd(end), tx))?;
+        rx.await??;
+        log::info!("Wrote packet end");
+
+        Ok(())
+    }
+
+    pub(crate) async fn write_packet_unchecked(&mut self, bits: &BitSlice) -> Result<()> {
+        let begin = PacketBeginFrame::new(SOCKET_BROADCAST_ADDRESS, self.config.address);
+        let (tx, rx) = oneshot::channel();
+        self.write_tx.send((NonAckFrame::PacketBegin(begin), tx))?;
+        rx.await??;
+
+        log::info!("Writing packet begin");
+        self.write(SOCKET_BROADCAST_ADDRESS, bits).await?;
+
+        let end = PacketEndFrame::new(SOCKET_BROADCAST_ADDRESS, self.config.address);
         let (tx, rx) = oneshot::channel();
         self.write_tx.send((NonAckFrame::PacketEnd(end), tx))?;
         rx.await??;
@@ -447,7 +499,9 @@ async fn socket_daemon(
 }
 
 fn is_for_self(config: &AcsmaSocketConfig, header: &FrameHeader) -> bool {
-    header.dest == config.address || header.dest == SOCKET_BROADCAST_ADDRESS
+    let is_dest = header.dest == config.address;
+    let is_broadcast = header.dest == SOCKET_BROADCAST_ADDRESS && header.src != config.address;
+    is_dest || is_broadcast
 }
 
 fn create_backoff(
