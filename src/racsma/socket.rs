@@ -528,26 +528,13 @@ fn clear_timer(
 }
 
 async fn write_bits(
-    config: &AcsmaSocketConfig,
+    _config: &AcsmaSocketConfig,
     write_ather: &AtherOutputStream,
-    colision_monitor: &mut AcsmaSocketWriteMonitor,
+    _colision_monitor: &mut AcsmaSocketWriteMonitor,
     bits: &BitSlice,
 ) -> Result<bool> {
-    let sample_rate = config.ather_config.stream_config.sample_rate().0;
-    tokio::select! {
-        result = write_ather.write(bits) => result.map(|_| true),
-        _ = async {
-            loop {
-                if let Some(sample) = colision_monitor.sample().await {
-                    let enery = sample.energy(sample_rate);
-                    // log::warn!("Energy {}", enery);
-                    if enery > SOCKET_COLISION_THRESHOLD {
-                        break;
-                    }
-                }
-            }
-        } => Ok(false)
-    }
+    write_ather.write(bits).await?;
+    Ok(true)
 }
 enum AcsmaSocketWriteTimer {
     Timeout {
