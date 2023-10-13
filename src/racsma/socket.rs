@@ -5,8 +5,8 @@ use super::{
         SOCKET_PING_INTERVAL, SOCKET_PING_TIMEOUT, SOCKET_RECIEVE_TIMEOUT, SOCKET_SLOT_TIMEOUT,
     },
     frame::{
-        AckFrame, AcsmaFrame, DataFrame, Frame, FrameHeader, FrameType, MacPingReqFrame,
-        MacPingRespFrame, NonAckFrame,
+        AckFrame, AcsmaFrame, DataFrame, Frame, FrameHeader, MacPingReqFrame, MacPingRespFrame,
+        NonAckFrame,
     },
 };
 use crate::{
@@ -319,45 +319,23 @@ async fn socket_daemon(
                         ..
                     } => {
                         let header = inner.task.0.header();
+                        log::debug!("Backoff timer expired. {}", header.seq);
                         if !is_channel_free(&config, &mut write_monitor).await {
-                            log::debug!(
-                                "Backoff timer expired. Medium state: busy. {}",
-                                header.seq
-                            );
+                            log::debug!("Medium state: busy. {}", header.seq);
                             Some(create_backoff(&mut rng, inner.task, retry + 1))
                         } else if inner.resends > SOCKET_MAX_RESENDS {
-                            log::debug!(
-                                "Backoff timer expired. Medium state: free. resends exceeded {}",
-                                header.seq
-                            );
-                            let _ = inner
-                                .task
-                                .1
-                                .send(Err(AcsmaIoError::LinkError(inner.resends).into()));
+                            log::debug!("Medium state: free. resends exceeded {}", header.seq);
+                            inner.link_error();
                             None
                         } else {
-                            log::debug!(
-                                "Backoff timer expired. Medium state: free. Resending {}",
-                                header.seq
-                            );
-                            let frame = inner.task.0.clone();
-                            if !write_bits(
-                                &config,
-                                &write_ather,
-                                &mut write_monitor,
-                                &Into::<BitVec>::into(frame),
-                            )
-                            .await?
+                            log::debug!("Medium state: free. Resending {}", header.seq);
+                            let bits = Into::<BitVec>::into(inner.task.0.clone());
+                            if !write_bits(&config, &write_ather, &mut write_monitor, &bits).await?
                             {
-                                log::debug!(
-                                    "Backoff timer expired. Medium state: free. Colision detected"
-                                );
+                                log::debug!("Medium state: free. Colision detected {}", header.seq);
                                 Some(create_backoff(&mut rng, inner.task, retry + 1))
                             } else {
-                                log::debug!(
-                                    "Backoff timer expired. Medium state: free. Resent {}",
-                                    header.seq
-                                );
+                                log::debug!("Medium state: free. Resent {}", header.seq);
                                 Some(AcsmaSocketWriteTimer::timeout(
                                     inner.task,
                                     inner.resends + 1,
@@ -383,15 +361,8 @@ async fn socket_daemon(
                     Some(create_backoff(&mut rng, task, 0))
                 } else {
                     log::debug!("Medium state: free. Sending {}", header.seq);
-                    let frame = task.0.clone();
-                    if !write_bits(
-                        &config,
-                        &write_ather,
-                        &mut write_monitor,
-                        &Into::<BitVec>::into(frame),
-                    )
-                    .await?
-                    {
+                    let bits = Into::<BitVec>::into(task.0.clone());
+                    if !write_bits(&config, &write_ather, &mut write_monitor, &bits).await? {
                         log::debug!("Medium state: free. Colision detected");
                         Some(create_backoff(&mut rng, task, 1))
                     } else {
@@ -458,22 +429,20 @@ fn clear_timer(
         _ => None,
     };
     if let Some(inner) = inner {
-        let is_data_ack =
-            matches!(inner.task.0, NonAckFrame::Data(_)) && header.r#type == FrameType::Ack.bits();
-        let is_macping_req_resp = matches!(inner.task.0, NonAckFrame::MacPingReq(_))
-            && header.r#type == FrameType::MacPingResp.bits();
-        if (is_data_ack || is_macping_req_resp) && header.seq == inner.task.0.header().seq {
+        let type_ok = inner.task.0.corresponds(header);
+        let seq_ok = inner.task.0.header().seq == header.seq;
+        if type_ok && seq_ok {
             let duration = generate_backoff(rng, 0);
             match mem::replace(
                 &mut timer,
                 AcsmaSocketWriteTimer::backoff(None, 0, duration),
             ) {
                 AcsmaSocketWriteTimer::Timeout { inner, .. } => {
-                    let _ = inner.task.1.send(Ok(()));
+                    inner.ok();
                     log::debug!("Clear ACK timeout {}", header.seq);
                 }
                 AcsmaSocketWriteTimer::Backoff { inner, .. } => {
-                    let _ = inner.unwrap().task.1.send(Ok(()));
+                    inner.unwrap().ok();
                     log::debug!("Clear Backoff timeout {}", header.seq);
                 }
             }
@@ -492,7 +461,7 @@ async fn write_bits(
 ) -> Result<bool> {
     let sample_rate = config.ather_config.stream_config.sample_rate().0;
     tokio::select! {
-        result = write_ather.write(bits) => result.and_then(|_| Ok(true)),
+        result = write_ather.write(bits) => result.map(|_| true),
         _ = async {
             loop {
                 if let Some(sample) = colision_monitor.sample().await {
@@ -522,6 +491,19 @@ enum AcsmaSocketWriteTimer {
 struct AcsmaSocketWriteTimerInner {
     task: AcsmaSocketWriteTask,
     resends: usize,
+}
+
+impl AcsmaSocketWriteTimerInner {
+    fn ok(self) {
+        let _ = self.task.1.send(Ok(()));
+    }
+
+    fn link_error(self) {
+        let _ = self
+            .task
+            .1
+            .send(Err(AcsmaIoError::LinkError(self.resends).into()));
+    }
 }
 
 fn generate_backoff(rng: &mut SmallRng, factor: usize) -> Duration {
@@ -619,6 +601,6 @@ impl AcsmaSocketWriteMonitor {
     }
 
     fn clear(&mut self) {
-        while let Ok(_) = self.resp_rx.try_recv() {}
+        while self.resp_rx.try_recv().is_ok() {}
     }
 }
