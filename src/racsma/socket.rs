@@ -185,13 +185,14 @@ impl AcsmaSocketReadPacketState {
     }
 }
 
+#[derive(Clone)]
 pub struct AcsmaSocketWriter {
     config: AcsmaSocketConfig,
     write_tx: UnboundedSender<AcsmaSocketWriteTask>,
 }
 
 impl AcsmaSocketWriter {
-    pub async fn write(&mut self, dest: usize, bits: &BitSlice) -> Result<()> {
+    pub async fn write(&self, dest: usize, bits: &BitSlice) -> Result<()> {
         let frames = bits
             .chunks(PAYLOAD_BITS_LEN)
             .enumerate()
@@ -210,7 +211,7 @@ impl AcsmaSocketWriter {
         Ok(())
     }
 
-    pub async fn write_packet(&mut self, dest: usize, bits: &BitSlice) -> Result<()> {
+    pub async fn write_packet(&self, dest: usize, bits: &BitSlice) -> Result<()> {
         let begin = PacketBeginFrame::new(dest, self.config.address);
         let (tx, rx) = oneshot::channel();
         self.write_tx.send((NonAckFrame::PacketBegin(begin), tx))?;
@@ -228,7 +229,7 @@ impl AcsmaSocketWriter {
         Ok(())
     }
 
-    pub(crate) async fn write_packet_unchecked(&mut self, bits: &BitSlice) -> Result<()> {
+    pub(crate) async fn write_packet_unchecked(&self, bits: &BitSlice) -> Result<()> {
         let begin = PacketBeginFrame::new(SOCKET_BROADCAST_ADDRESS, self.config.address);
         let (tx, rx) = oneshot::channel();
         self.write_tx.send((NonAckFrame::PacketBegin(begin), tx))?;
@@ -246,17 +247,17 @@ impl AcsmaSocketWriter {
         Ok(())
     }
 
-    pub async fn perf(&mut self, dest: usize) -> Result<()> {
+    pub async fn perf(&self, dest: usize) -> Result<()> {
         let (send_tx, send_rx) = mpsc::unbounded_channel();
         tokio::try_join!(
             perf_main(send_rx),
-            perf_daemon(&self.config, &mut self.write_tx, dest, send_tx)
+            perf_daemon(&self.config, &self.write_tx, dest, send_tx)
         )?;
 
         Ok(())
     }
 
-    pub async fn ping(&mut self, dest: usize) -> Result<()> {
+    pub async fn ping(&self, dest: usize) -> Result<()> {
         let frame = NonAckFrame::MacPingReq(MacPingReqFrame::new(dest, self.config.address));
         loop {
             time::sleep(SOCKET_PING_INTERVAL).await;
@@ -275,7 +276,7 @@ impl AcsmaSocketWriter {
 
 async fn perf_daemon(
     config: &AcsmaSocketConfig,
-    write_tx: &mut UnboundedSender<AcsmaSocketWriteTask>,
+    write_tx: &UnboundedSender<AcsmaSocketWriteTask>,
     dest: usize,
     send_tx: UnboundedSender<usize>,
 ) -> Result<()> {
