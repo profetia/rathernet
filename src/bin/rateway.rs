@@ -2,8 +2,10 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use rathernet::rateway::builtin::{CALIBRATE_BUFFER_SIZE, CALIBRATE_SEND_INTERVAL};
+use serde::{de::Error, Deserialize};
 use std::{
-    net::{SocketAddr, SocketAddrV4},
+    fs,
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     str::FromStr,
 };
 use tokio::{net::UdpSocket, time};
@@ -29,6 +31,12 @@ enum SubCommand {
         /// The type of calibration to perform.
         #[clap(short, long, default_value = "duplex")]
         r#type: CalibrateType,
+    },
+    /// Install rathernet rateway as a network adapter to the athernet.
+    Install {
+        /// The path to the configuration file.
+        #[clap(short, long, default_value = "rateway.toml")]
+        config: String,
     },
 }
 
@@ -63,7 +71,13 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        SubCommand::Install { config } => {
+            let config = fs::read_to_string(config)?;
+            let config: RatewayConfig = toml::from_str(&config)?;
+            println!("{:?}", config);
+        }
     }
+
     Ok(())
 }
 
@@ -86,4 +100,39 @@ async fn calibrate_receive(socket: &UdpSocket, dest: &SocketAddr) -> Result<()> 
         println!("Received {} bytes from {}", len, dest);
         println!("{:?}", &buf[..len]);
     }
+}
+
+#[derive(Clone, Deserialize, Debug)]
+struct RatewayConfig {
+    name: String,
+    #[serde(rename = "ip")]
+    address: Ipv4Addr,
+    #[serde(deserialize_with = "deserialize_port")]
+    port: u16,
+    netmask: Ipv4Addr,
+    gateway: Ipv4Addr,
+    #[serde(rename = "socket")]
+    socket_config: RatewaySocketConfig,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+struct RatewaySocketConfig {
+    #[serde(rename = "mac", deserialize_with = "deserialize_mac")]
+    address: usize,
+}
+
+fn deserialize_port<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let port = String::deserialize(deserializer)?;
+    port.parse::<u16>().map_err(Error::custom)
+}
+
+fn deserialize_mac<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let mac = String::deserialize(deserializer)?;
+    mac.parse::<usize>().map_err(Error::custom)
 }
