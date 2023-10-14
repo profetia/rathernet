@@ -657,13 +657,8 @@ impl AcsmaSocketWriteTimer {
 }
 
 impl AcsmaSocketWriteTimer {
-    fn is_expired(&self) -> bool {
-        match self {
-            Self::Timeout { start, .. } => start.elapsed() > SOCKET_ACK_TIMEOUT,
-            Self::Backoff {
-                start, duration, ..
-            } => start.elapsed() > *duration,
-        }
+    fn is_expired(&self) -> bool {        
+        self.elapsed() > self.duration()
     }
 
     fn elapsed(&self) -> Duration {
