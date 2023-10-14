@@ -9,11 +9,7 @@ use futures::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
-use packet::{
-    icmp,
-    ip::{self, Protocol},
-    Builder, Packet,
-};
+use packet::{icmp, ip, Builder, Packet};
 use std::{
     future::Future,
     net::Ipv4Addr,
@@ -120,19 +116,19 @@ async fn receive_daemon(
 ) -> Result<()> {
     while let Ok(packet) = rx_socket.read_packet_unchecked().await {
         let bytes = DecodeToBytes::decode(&packet);
-        log::debug!("Receive packet: {}", bytes.len());
+        // log::debug!("Receive packet: {}", bytes.len());
         if let Ok(ip::Packet::V4(packet)) = ip::Packet::new(&bytes) {
             let src = packet.source();
             let dest = packet.destination();
             let protocol = packet.protocol();
 
-            log::info!("Got packet {} -> {} ({:?})", src, dest, protocol);
+            log::info!("Receive packet {} -> {} ({:?})", src, dest, protocol);
             if dest == config.address {
-                if protocol == Protocol::Icmp {
-                    if let Ok(icmp) = icmp::Packet::new(packet.payload()) {
-                        if let Ok(icmp) = icmp.echo() {
+                if let Ok(icmp) = icmp::Packet::new(packet.payload()) {
+                    if let Ok(echo) = icmp.echo() {
+                        if echo.is_request() {
                             log::debug!("Receive ICMP echo request");
-                            let reply = create_reply(packet.id(), dest, src, icmp).await?;
+                            let reply = create_reply(packet.id(), dest, src, echo).await?;
                             tx_socket.write_packet_unchecked(&reply.encode()).await?;
                             continue;
                         }
@@ -153,13 +149,13 @@ async fn send_daemon(
 ) -> Result<()> {
     while let Some(Ok(packet)) = rx_tun.next().await {
         let bytes = packet.get_bytes();
-        log::debug!("Receive packet: {}", bytes.len());
+        // log::debug!("Receive packet: {}", bytes.len());
         if let Ok(ip::Packet::V4(packet)) = ip::Packet::new(bytes) {
             let src = packet.source();
             let dest = packet.destination();
             let protocol = packet.protocol();
 
-            log::info!("Got packet {} -> {} ({:?})", src, dest, protocol);
+            log::info!("Send packet {} -> {} ({:?})", src, dest, protocol);
             let bits = bytes.encode();
             tx_socket.write_packet_unchecked(&bits).await?;
         }
