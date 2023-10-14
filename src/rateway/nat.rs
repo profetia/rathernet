@@ -1,4 +1,4 @@
-use super::adapter::create_reply;
+use super::adapter::{create_reply, flatten};
 use crate::{
     racsma::{AcsmaIoSocket, AcsmaSocketConfig, AcsmaSocketReader, AcsmaSocketWriter},
     rather::encode::{DecodeToBytes, EncodeFromBytes},
@@ -89,10 +89,10 @@ async fn adapter_daemon(config: AtewayNatConfig, device: AsioDevice) -> Result<(
     let tunnel = Arc::new(Socket::new(Domain::IPV4, Type::RAW, None)?);
     tunnel.set_header_included(true)?;
 
-    tokio::try_join!(
-        receive_daemon(config, tx_socket.clone(), rx_socket, tunnel.clone()),
-        send_daemon(tx_socket, tunnel)
-    )?;
+    let receive_handle = tokio::spawn(receive_daemon(config, tx_socket.clone(), rx_socket, tunnel.clone()));
+    let send_handle = tokio::spawn(send_daemon(tx_socket, tunnel));
+
+    tokio::try_join!(flatten(receive_handle), flatten(send_handle))?;
     Ok(())
 }
 

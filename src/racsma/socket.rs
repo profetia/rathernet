@@ -133,20 +133,25 @@ impl AcsmaSocketReader {
 
     pub(crate) async fn read_packet_unchecked(&mut self) -> Result<BitVec> {
         let mut state = AcsmaSocketReadPacketState::Pending;
+        // log::warn!("Reading packet in read_packet_unchecked");
         while let Some(frame) = self.read_rx.recv().await {
             let header = frame.header().clone();
+            // log::debug!("Receive frame {} type {}", header.seq, header.r#type);
 
             match &mut state {
                 AcsmaSocketReadPacketState::Pending => {
                     if let NonAckFrame::PacketBegin(_) = frame {
                         state.begin();
+                        log::debug!("Reading packet begin");
                     }
                 }
                 AcsmaSocketReadPacketState::Reading(ref mut bucket) => {
                     if let NonAckFrame::PacketEnd(_) = frame {
+                        log::debug!("Reading packet end");
                         break;
                     } else if let NonAckFrame::Data(data) = frame {
                         let payload = data.payload().unwrap();
+                        log::debug!("Reading frame {}", header.seq);
                         bucket.entry(header.seq).or_insert(payload.to_owned());
                     }
                 }
@@ -657,7 +662,7 @@ impl AcsmaSocketWriteTimer {
 }
 
 impl AcsmaSocketWriteTimer {
-    fn is_expired(&self) -> bool {        
+    fn is_expired(&self) -> bool {
         self.elapsed() > self.duration()
     }
 
