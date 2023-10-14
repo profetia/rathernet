@@ -6,11 +6,7 @@ use crate::{
 };
 use anyhow::Result;
 use futures::future::LocalBoxFuture;
-use packet::{
-    icmp,
-    ip::{self, Protocol},
-    Packet,
-};
+use packet::{icmp, ip, Packet};
 use socket2::{Domain, Socket, Type};
 use std::{
     future::Future,
@@ -115,13 +111,13 @@ async fn receive_daemon(
             let dest = packet.destination();
             let protocol = packet.protocol();
 
-            log::info!("Got packet {} -> {} ({:?})", src, dest, protocol);
+            log::info!("Receive packet {} -> {} ({:?})", src, dest, protocol);
             if dest == config.address {
-                if protocol == Protocol::Icmp {
-                    if let Ok(icmp) = icmp::Packet::new(packet.payload()) {
-                        if let Ok(icmp) = icmp.echo() {
+                if let Ok(icmp) = icmp::Packet::new(packet.payload()) {
+                    if let Ok(echo) = icmp.echo() {
+                        if echo.is_request() {
                             log::debug!("Receive ICMP echo request");
-                            let reply = create_reply(packet.id(), dest, src, icmp).await?;
+                            let reply = create_reply(packet.id(), dest, src, echo).await?;
                             tx_socket.write_packet_unchecked(&reply.encode()).await?;
                             continue;
                         }
@@ -147,7 +143,7 @@ async fn send_daemon(tx_socket: AcsmaSocketWriter, tunnel: Arc<Socket>) -> Resul
             let dest = packet.destination();
             let protocol = packet.protocol();
 
-            log::info!("Got packet {} -> {} ({:?})", src, dest, protocol);
+            log::info!("Send packet {} -> {} ({:?})", src, dest, protocol);
 
             packet
                 .set_source("192.168.1.3".parse()?)?
