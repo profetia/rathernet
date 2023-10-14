@@ -10,6 +10,7 @@ use futures::{
     SinkExt, StreamExt,
 };
 use packet::{icmp, ip, Builder, Packet};
+use tokio::task::JoinHandle;
 use std::{
     future::Future,
     net::Ipv4Addr,
@@ -101,11 +102,19 @@ async fn adapter_daemon(config: AtewayAdapterConfig, device: AsioDevice) -> Resu
     let dev = tun::create_as_async(&tun_config)?;
     let (tx_tun, rx_tun) = dev.into_framed().split();
 
-    tokio::try_join!(
-        receive_daemon(config, tx_socket.clone(), rx_socket, tx_tun),
-        send_daemon(tx_socket, rx_tun)
-    )?;
+    let receive_handle = tokio::spawn(receive_daemon(config, tx_socket.clone(), rx_socket, tx_tun));
+    let send_handle = tokio::spawn(send_daemon(tx_socket, rx_tun));
+
+    tokio::try_join!(flatten(receive_handle), flatten(send_handle))?;
     Ok(())
+}
+
+pub async fn flatten<T>(handle: JoinHandle<Result<T>>) -> Result<T> {
+    match handle.await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(err)) => Err(err),
+        Err(err) => Err(err.into()),
+    }
 }
 
 async fn receive_daemon(
