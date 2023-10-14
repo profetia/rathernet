@@ -10,13 +10,13 @@ use futures::{
     SinkExt, StreamExt,
 };
 use packet::{icmp, ip, Builder, Packet};
-use tokio::task::JoinHandle;
 use std::{
     future::Future,
     net::Ipv4Addr,
     pin::Pin,
     task::{Context, Poll},
 };
+use tokio::task::JoinHandle;
 use tokio_util::codec::Framed;
 use tun::{AsyncDevice, Configuration, TunPacket, TunPacketCodec};
 
