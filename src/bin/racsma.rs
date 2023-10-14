@@ -73,9 +73,6 @@ enum Commands {
         /// Writes the received bits as a text file consisting of 1s and 0s.
         #[clap(short, long, default_value = "false")]
         chars: bool,
-        /// Number of bits to read.
-        #[clap(short, long, default_value = "0")]
-        num_bits: usize,
         /// The address that will be used to recieve the bits.
         #[clap(short, long, default_value = "0", value_parser = parse_address)]
         address: usize,
@@ -97,9 +94,6 @@ enum Commands {
         /// Interprets the file as a text file consisting of 1s and 0s.
         #[clap(short, long, default_value = "false")]
         chars: bool,
-        /// Number of bits to read.
-        #[clap(short, long, default_value = "0")]
-        num_bits: usize,
         /// The address that will be used to send the file.
         #[clap(short, long, default_value = "0", value_parser = parse_address)]
         address: usize,
@@ -316,7 +310,6 @@ async fn main() -> Result<()> {
             file,
             device,
             chars,
-            num_bits,
             address,
             peer,
         } => {
@@ -333,9 +326,7 @@ async fn main() -> Result<()> {
             let stream_config = AcsmaStreamConfig::new(address);
             let mut acsma_stream = AcsmaIoStream::new(stream_config, read_ather, write_ather);
 
-            let mut buf = bitvec![0; num_bits];
-            acsma_stream.read(peer, &mut buf).await?;
-
+            let buf = acsma_stream.read(peer).await?;
             dump_bits(buf, file, chars)?;
         }
         Commands::Duplex {
@@ -343,7 +334,6 @@ async fn main() -> Result<()> {
             file,
             device,
             chars,
-            num_bits,
             address,
             peer,
         } => {
@@ -356,10 +346,7 @@ async fn main() -> Result<()> {
                 AcsmaIoSocket::try_from_device(socket_config, &device)?;
 
             let bits = load_bits(source, chars)?;
-
-            let mut buf = bitvec![0; num_bits];
-            tokio::try_join!(tx_socket.write(peer, &bits), rx_socket.read(peer, &mut buf))?;
-
+            let (_, buf) = tokio::try_join!(tx_socket.write(peer, &bits), rx_socket.read(peer))?;
             dump_bits(buf, file, chars)?;
         }
         Commands::Perf {

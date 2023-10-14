@@ -89,7 +89,12 @@ async fn adapter_daemon(config: AtewayNatConfig, device: AsioDevice) -> Result<(
     let tunnel = Arc::new(Socket::new(Domain::IPV4, Type::RAW, None)?);
     tunnel.set_header_included(true)?;
 
-    let receive_handle = tokio::spawn(receive_daemon(config, tx_socket.clone(), rx_socket, tunnel.clone()));
+    let receive_handle = tokio::spawn(receive_daemon(
+        config,
+        tx_socket.clone(),
+        rx_socket,
+        tunnel.clone(),
+    ));
     let send_handle = tokio::spawn(send_daemon(tx_socket, tunnel));
 
     tokio::try_join!(flatten(receive_handle), flatten(send_handle))?;
@@ -104,7 +109,7 @@ async fn receive_daemon(
 ) -> Result<()> {
     let baidu = "110.242.68.66".parse()?;
 
-    while let Ok(packet) = rx_socket.read_packet_unchecked().await {
+    while let Ok(packet) = rx_socket.read_unchecked().await {
         let bytes = DecodeToBytes::decode(&packet);
         if let Ok(ip::Packet::V4(packet)) = ip::Packet::new(&bytes) {
             let src = packet.source();
@@ -118,7 +123,7 @@ async fn receive_daemon(
                         if echo.is_request() {
                             log::debug!("Receive ICMP echo request");
                             let reply = create_reply(packet.id(), dest, src, echo).await?;
-                            tx_socket.write_packet_unchecked(&reply.encode()).await?;
+                            tx_socket.write_unchecked(&reply.encode()).await?;
                             continue;
                         }
                     }
@@ -151,7 +156,7 @@ async fn send_daemon(tx_socket: AcsmaSocketWriter, tunnel: Arc<Socket>) -> Resul
                 .update_checksum()?;
 
             let bits = packet.as_ref().encode();
-            tx_socket.write_packet_unchecked(&bits).await?;
+            tx_socket.write_unchecked(&bits).await?;
         }
     }
 

@@ -123,7 +123,7 @@ async fn receive_daemon(
     mut rx_socket: AcsmaSocketReader,
     mut tx_tun: SplitSink<Framed<AsyncDevice, TunPacketCodec>, TunPacket>,
 ) -> Result<()> {
-    while let Ok(packet) = rx_socket.read_packet_unchecked().await {
+    while let Ok(packet) = rx_socket.read_unchecked().await {
         let bytes = DecodeToBytes::decode(&packet);
         // log::debug!("Receive packet: {}", bytes.len());
         if let Ok(ip::Packet::V4(packet)) = ip::Packet::new(&bytes) {
@@ -138,7 +138,7 @@ async fn receive_daemon(
                         if echo.is_request() {
                             log::debug!("Receive ICMP echo request");
                             let reply = create_reply(packet.id(), dest, src, echo).await?;
-                            tx_socket.write_packet_unchecked(&reply.encode()).await?;
+                            tx_socket.write_unchecked(&reply.encode()).await?;
                             continue;
                         }
                     }
@@ -166,7 +166,7 @@ async fn send_daemon(
 
             log::info!("Send packet {} -> {} ({:?})", src, dest, protocol);
             let bits = bytes.encode();
-            tx_socket.write_packet_unchecked(&bits).await?;
+            tx_socket.write_unchecked(&bits).await?;
         }
     }
     Ok(())

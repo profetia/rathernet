@@ -1,8 +1,9 @@
 use super::builtin::{
-    ADDRESS_BITS_LEN, PARITY_ALGORITHM, PARITY_BITS_LEN, SEQ_BITS_LEN, TYPE_BITS_LEN,
+    ADDRESS_BITS_LEN, FLAG_BITS_LEN, PARITY_ALGORITHM, PARITY_BITS_LEN, SEQ_BITS_LEN, TYPE_BITS_LEN,
 };
 use crate::rather::encode::{DecodeToBytes, DecodeToInt};
 use anyhow::{Error, Result};
+use bitflags::bitflags;
 use bitvec::prelude::*;
 use thiserror::Error;
 
@@ -14,13 +15,24 @@ impl FrameType {
     pub const ACK: Self = Self(0b0000_0001);
     pub const MAC_PING_REQ: Self = Self(0b0000_0010);
     pub const MAC_PING_RESP: Self = Self(0b0000_0011);
-    pub const PACKET_BEGIN: Self = Self(0b0000_0100);
-    pub const PACKET_END: Self = Self(0b0000_0101);
 }
 
 impl From<FrameType> for usize {
     fn from(value: FrameType) -> Self {
         value.0
+    }
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct FrameFlag: usize {
+        const EOP = 0b0000_0001;
+    }
+}
+
+impl Default for FrameFlag {
+    fn default() -> Self {
+        Self::from_bits_truncate(0)
     }
 }
 
@@ -30,6 +42,7 @@ pub struct FrameHeader {
     pub src: usize,
     pub seq: usize,
     pub r#type: usize,
+    pub flag: FrameFlag,
 }
 
 impl From<FrameHeader> for BitVec {
@@ -39,6 +52,7 @@ impl From<FrameHeader> for BitVec {
         header.extend(&value.src.view_bits::<Lsb0>()[..ADDRESS_BITS_LEN]);
         header.extend(&value.seq.view_bits::<Lsb0>()[..SEQ_BITS_LEN]);
         header.extend(&value.r#type.view_bits::<Lsb0>()[..TYPE_BITS_LEN]);
+        header.extend(&value.flag.bits().view_bits::<Lsb0>()[..FLAG_BITS_LEN]);
 
         header
     }
@@ -57,6 +71,14 @@ impl From<&BitSlice> for FrameHeader {
                 &value[ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN
                     ..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
             ),
+            flag: FrameFlag::from_bits_truncate(DecodeToInt::decode(
+                &value[ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN
+                    ..ADDRESS_BITS_LEN
+                        + ADDRESS_BITS_LEN
+                        + SEQ_BITS_LEN
+                        + TYPE_BITS_LEN
+                        + FLAG_BITS_LEN],
+            )),
         }
     }
 }
@@ -73,13 +95,14 @@ pub struct DataFrame {
 }
 
 impl DataFrame {
-    pub fn new(dest: usize, src: usize, seq: usize, payload: BitVec) -> Self {
+    pub fn new(dest: usize, src: usize, seq: usize, flag: FrameFlag, payload: BitVec) -> Self {
         Self {
             header: FrameHeader {
                 dest,
                 src,
                 seq,
                 r#type: FrameType::DATA.into(),
+                flag,
             },
             payload,
         }
@@ -107,18 +130,28 @@ impl From<DataFrame> for BitVec {
 
 fn verify(bits: &BitSlice) -> Result<(), Error> {
     if bits.len()
-        < ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN + PARITY_BITS_LEN
+        < ADDRESS_BITS_LEN
+            + ADDRESS_BITS_LEN
+            + SEQ_BITS_LEN
+            + TYPE_BITS_LEN
+            + FLAG_BITS_LEN
+            + PARITY_BITS_LEN
     {
         return Err(FrameDecodeError::FrameIsTooShort(
             bits.len(),
-            ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN + PARITY_BITS_LEN,
+            ADDRESS_BITS_LEN
+                + ADDRESS_BITS_LEN
+                + SEQ_BITS_LEN
+                + TYPE_BITS_LEN
+                + FLAG_BITS_LEN
+                + PARITY_BITS_LEN,
         )
         .into());
     }
 
     let len = bits.len();
     let parity = DecodeToInt::<usize>::decode(&bits[len - PARITY_BITS_LEN..]);
-    let bytes = DecodeToBytes::decode(&bits[..len - PARITY_BITS_LEN]);
+    let bytes: Vec<u8> = DecodeToBytes::decode(&bits[..len - PARITY_BITS_LEN]);
     if PARITY_ALGORITHM.checksum(&bytes) as usize != parity {
         return Err(FrameDecodeError::ParityCheckFailed(
             parity,
@@ -136,7 +169,11 @@ impl TryFrom<BitVec> for DataFrame {
     fn try_from(value: BitVec) -> Result<Self, Self::Error> {
         verify(&value)?;
         let header = FrameHeader::from(
-            &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
+            &value[..ADDRESS_BITS_LEN
+                + ADDRESS_BITS_LEN
+                + SEQ_BITS_LEN
+                + TYPE_BITS_LEN
+                + FLAG_BITS_LEN],
         );
         if header.r#type != FrameType::DATA.into() {
             return Err(FrameDecodeError::UnexpectedFrameType(
@@ -145,8 +182,11 @@ impl TryFrom<BitVec> for DataFrame {
             )
             .into());
         }
-        let payload = value[ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN
-            ..value.len() - PARITY_BITS_LEN]
+        let payload = value[ADDRESS_BITS_LEN
+            + ADDRESS_BITS_LEN
+            + SEQ_BITS_LEN
+            + TYPE_BITS_LEN
+            + FLAG_BITS_LEN..value.len() - PARITY_BITS_LEN]
             .to_owned();
         Ok(Self { header, payload })
     }
@@ -171,6 +211,7 @@ impl AckFrame {
                 src,
                 seq,
                 r#type: FrameType::ACK.into(),
+                flag: FrameFlag::default(),
             },
         }
     }
@@ -200,7 +241,11 @@ impl TryFrom<BitVec> for AckFrame {
     fn try_from(value: BitVec) -> Result<Self, Self::Error> {
         verify(&value)?;
         let header = FrameHeader::from(
-            &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
+            &value[..ADDRESS_BITS_LEN
+                + ADDRESS_BITS_LEN
+                + SEQ_BITS_LEN
+                + TYPE_BITS_LEN
+                + FLAG_BITS_LEN],
         );
         if header.r#type != FrameType::ACK.into() {
             return Err(FrameDecodeError::UnexpectedFrameType(
@@ -226,6 +271,7 @@ impl MacPingReqFrame {
                 src,
                 seq: 0,
                 r#type: FrameType::MAC_PING_REQ.into(),
+                flag: FrameFlag::default(),
             },
         }
     }
@@ -255,7 +301,11 @@ impl TryFrom<BitVec> for MacPingReqFrame {
     fn try_from(value: BitVec) -> Result<Self, Self::Error> {
         verify(&value)?;
         let header = FrameHeader::from(
-            &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
+            &value[..ADDRESS_BITS_LEN
+                + ADDRESS_BITS_LEN
+                + SEQ_BITS_LEN
+                + TYPE_BITS_LEN
+                + FLAG_BITS_LEN],
         );
         if header.r#type != FrameType::MAC_PING_REQ.into() {
             return Err(FrameDecodeError::UnexpectedFrameType(
@@ -281,6 +331,7 @@ impl MacPingRespFrame {
                 src,
                 seq: 0,
                 r#type: FrameType::MAC_PING_RESP.into(),
+                flag: FrameFlag::default(),
             },
         }
     }
@@ -310,122 +361,16 @@ impl TryFrom<BitVec> for MacPingRespFrame {
     fn try_from(value: BitVec) -> Result<Self, Self::Error> {
         verify(&value)?;
         let header = FrameHeader::from(
-            &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
+            &value[..ADDRESS_BITS_LEN
+                + ADDRESS_BITS_LEN
+                + SEQ_BITS_LEN
+                + TYPE_BITS_LEN
+                + FLAG_BITS_LEN],
         );
         if header.r#type != FrameType::MAC_PING_RESP.into() {
             return Err(FrameDecodeError::UnexpectedFrameType(
                 header.r#type,
                 FrameType::MAC_PING_RESP.into(),
-            )
-            .into());
-        }
-        Ok(Self { header })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PacketBeginFrame {
-    header: FrameHeader,
-}
-
-impl PacketBeginFrame {
-    pub fn new(dest: usize, src: usize) -> Self {
-        Self {
-            header: FrameHeader {
-                dest,
-                src,
-                seq: 0,
-                r#type: FrameType::PACKET_BEGIN.into(),
-            },
-        }
-    }
-}
-
-impl Frame for PacketBeginFrame {
-    fn header(&self) -> &FrameHeader {
-        &self.header
-    }
-
-    fn payload(&self) -> Option<&BitSlice> {
-        None
-    }
-}
-
-impl From<PacketBeginFrame> for BitVec {
-    fn from(value: PacketBeginFrame) -> Self {
-        let mut frame = BitVec::from(value.header);
-        frame.extend(checksum(&frame));
-        frame
-    }
-}
-
-impl TryFrom<BitVec> for PacketBeginFrame {
-    type Error = Error;
-
-    fn try_from(value: BitVec) -> Result<Self, Self::Error> {
-        verify(&value)?;
-        let header = FrameHeader::from(
-            &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
-        );
-        if header.r#type != FrameType::PACKET_BEGIN.into() {
-            return Err(FrameDecodeError::UnexpectedFrameType(
-                header.r#type,
-                FrameType::PACKET_BEGIN.into(),
-            )
-            .into());
-        }
-        Ok(Self { header })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PacketEndFrame {
-    header: FrameHeader,
-}
-
-impl PacketEndFrame {
-    pub fn new(dest: usize, src: usize) -> Self {
-        Self {
-            header: FrameHeader {
-                dest,
-                src,
-                seq: 0,
-                r#type: FrameType::PACKET_END.into(),
-            },
-        }
-    }
-}
-
-impl Frame for PacketEndFrame {
-    fn header(&self) -> &FrameHeader {
-        &self.header
-    }
-
-    fn payload(&self) -> Option<&BitSlice> {
-        None
-    }
-}
-
-impl From<PacketEndFrame> for BitVec {
-    fn from(value: PacketEndFrame) -> Self {
-        let mut frame = BitVec::from(value.header);
-        frame.extend(checksum(&frame));
-        frame
-    }
-}
-
-impl TryFrom<BitVec> for PacketEndFrame {
-    type Error = Error;
-
-    fn try_from(value: BitVec) -> Result<Self, Self::Error> {
-        verify(&value)?;
-        let header = FrameHeader::from(
-            &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
-        );
-        if header.r#type != FrameType::PACKET_END.into() {
-            return Err(FrameDecodeError::UnexpectedFrameType(
-                header.r#type,
-                FrameType::PACKET_END.into(),
             )
             .into());
         }
@@ -456,7 +401,11 @@ impl TryFrom<BitVec> for AcsmaFrame {
     fn try_from(value: BitVec) -> Result<Self, Self::Error> {
         verify(&value)?;
         let header = FrameHeader::from(
-            &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
+            &value[..ADDRESS_BITS_LEN
+                + ADDRESS_BITS_LEN
+                + SEQ_BITS_LEN
+                + TYPE_BITS_LEN
+                + FLAG_BITS_LEN],
         );
 
         if header.r#type == FrameType::ACK.into() {
@@ -493,27 +442,28 @@ impl Frame for AcsmaFrame {
 pub enum NonAckFrame {
     Data(DataFrame),
     MacPingReq(MacPingReqFrame),
-    PacketBegin(PacketBeginFrame),
-    PacketEnd(PacketEndFrame),
 }
 
 impl NonAckFrame {
     fn try_from_bitvec_unchecked(value: BitVec) -> Result<Self> {
         let header = FrameHeader::from(
-            &value[..ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN],
+            &value[..ADDRESS_BITS_LEN
+                + ADDRESS_BITS_LEN
+                + SEQ_BITS_LEN
+                + TYPE_BITS_LEN
+                + FLAG_BITS_LEN],
         );
 
         if header.r#type == FrameType::DATA.into() {
-            let payload = value[ADDRESS_BITS_LEN + ADDRESS_BITS_LEN + SEQ_BITS_LEN + TYPE_BITS_LEN
-                ..value.len() - PARITY_BITS_LEN]
+            let payload = value[ADDRESS_BITS_LEN
+                + ADDRESS_BITS_LEN
+                + SEQ_BITS_LEN
+                + TYPE_BITS_LEN
+                + FLAG_BITS_LEN..value.len() - PARITY_BITS_LEN]
                 .to_owned();
             Ok(NonAckFrame::Data(DataFrame { header, payload }))
         } else if header.r#type == FrameType::MAC_PING_REQ.into() {
             Ok(NonAckFrame::MacPingReq(MacPingReqFrame { header }))
-        } else if header.r#type == FrameType::PACKET_BEGIN.into() {
-            Ok(NonAckFrame::PacketBegin(PacketBeginFrame { header }))
-        } else if header.r#type == FrameType::PACKET_END.into() {
-            Ok(NonAckFrame::PacketEnd(PacketEndFrame { header }))
         } else if header.r#type == FrameType::ACK.into() {
             return Err(FrameDecodeError::UnexpectedFrameType(
                 header.r#type,
@@ -529,8 +479,6 @@ impl NonAckFrame {
         match self {
             NonAckFrame::Data(_) => other.r#type == FrameType::ACK.into(),
             NonAckFrame::MacPingReq(_) => other.r#type == FrameType::MAC_PING_RESP.into(),
-            NonAckFrame::PacketBegin(_) => other.r#type == FrameType::ACK.into(),
-            NonAckFrame::PacketEnd(_) => other.r#type == FrameType::ACK.into(),
         }
     }
 }
@@ -540,8 +488,6 @@ impl From<NonAckFrame> for BitVec {
         match value {
             NonAckFrame::Data(data) => data.into(),
             NonAckFrame::MacPingReq(ping) => ping.into(),
-            NonAckFrame::PacketBegin(begin) => begin.into(),
-            NonAckFrame::PacketEnd(end) => end.into(),
         }
     }
 }
@@ -560,8 +506,6 @@ impl Frame for NonAckFrame {
         match self {
             NonAckFrame::Data(data) => data.header(),
             NonAckFrame::MacPingReq(ping) => ping.header(),
-            NonAckFrame::PacketBegin(begin) => begin.header(),
-            NonAckFrame::PacketEnd(end) => end.header(),
         }
     }
 
@@ -569,8 +513,6 @@ impl Frame for NonAckFrame {
         match self {
             NonAckFrame::Data(data) => data.payload(),
             NonAckFrame::MacPingReq(ping) => ping.payload(),
-            NonAckFrame::PacketBegin(begin) => begin.payload(),
-            NonAckFrame::PacketEnd(end) => end.payload(),
         }
     }
 }
