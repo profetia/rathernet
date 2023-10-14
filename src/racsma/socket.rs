@@ -5,8 +5,8 @@ use super::{
         SOCKET_PING_INTERVAL, SOCKET_PING_TIMEOUT, SOCKET_RECIEVE_TIMEOUT, SOCKET_SLOT_TIMEOUT,
     },
     frame::{
-        AckFrame, AcsmaFrame, DataFrame, Frame, FrameHeader, MacPingReqFrame, MacPingRespFrame,
-        NonAckFrame, PacketBeginFrame, PacketEndFrame,
+        AckFrame, AcsmaFrame, DataFrame, Frame, FrameFlag, FrameHeader, MacPingReqFrame,
+        MacPingRespFrame, NonAckFrame,
     },
 };
 use crate::{
@@ -60,114 +60,51 @@ pub struct AcsmaSocketReader {
 }
 
 impl AcsmaSocketReader {
-    pub async fn read(&mut self, src: usize, buf: &mut BitSlice) -> Result<()> {
-        let (mut bucket, mut total_len) = (BTreeMap::new(), 0usize);
+    pub async fn read(&mut self, src: usize) -> Result<BitVec> {
+        let mut bucket = BTreeMap::new();
         while let Some(frame) = self.read_rx.recv().await {
             let header = frame.header().clone();
-            log::info!("Receive frame {}, total {}", header.seq, total_len);
+            log::info!("Receive frame {}", header.seq);
             if src == header.src {
                 if let NonAckFrame::Data(data) = frame {
                     let payload = data.payload().unwrap();
-                    bucket.entry(header.seq).or_insert_with(|| {
-                        total_len += payload.len();
-                        payload.to_owned()
-                    });
+                    bucket.entry(header.seq).or_insert(payload.to_owned());
 
-                    if total_len >= buf.len() {
+                    if header.flag.contains(FrameFlag::EOP) {
                         break;
                     }
                 }
             }
         }
 
-        log::info!("Read {} frames, total {}", bucket.len(), total_len);
+        let result = bucket.iter().fold(bitvec![], |mut acc, (_, payload)| {
+            acc.extend_from_bitslice(payload);
+            acc
+        });
 
-        buf.copy_from_bitslice(
-            &bucket
-                .into_iter()
-                .fold(BitVec::new(), |mut acc, (_, payload)| {
-                    acc.extend_from_bitslice(&payload);
-                    acc
-                })[..buf.len()],
-        );
+        log::info!("Read {} frames, total {}", bucket.len(), result.len());
 
-        Ok(())
+        Ok(result)
     }
 
-    pub async fn read_packet(&mut self, src: usize) -> Result<BitVec> {
-        let mut state = AcsmaSocketReadPacketState::Pending;
+    pub(crate) async fn read_unchecked(&mut self) -> Result<BitVec> {
+        let mut bucket = BTreeMap::new();
         while let Some(frame) = self.read_rx.recv().await {
             let header = frame.header().clone();
-            if src == header.src {
-                match &mut state {
-                    AcsmaSocketReadPacketState::Pending => {
-                        if let NonAckFrame::PacketBegin(_) = frame {
-                            state.begin();
-                        }
-                    }
-                    AcsmaSocketReadPacketState::Reading(ref mut bucket) => {
-                        log::info!("Receive frame {}", header.seq);
-                        if let NonAckFrame::PacketEnd(_) = frame {
-                            break;
-                        } else if let NonAckFrame::Data(data) = frame {
-                            let payload = data.payload().unwrap();
-                            bucket.entry(header.seq).or_insert(payload.to_owned());
-                        }
-                    }
+            if let NonAckFrame::Data(data) = frame {
+                let payload = data.payload().unwrap();
+                bucket.entry(header.seq).or_insert(payload.to_owned());
+                if header.flag.contains(FrameFlag::EOP) {
+                    break;
                 }
             }
         }
 
-        if let AcsmaSocketReadPacketState::Reading(bucket) = state {
-            log::info!("Read {} frames", bucket.len());
-            return Ok(bucket
-                .into_iter()
-                .fold(BitVec::new(), |mut acc, (_, payload)| {
-                    acc.extend_from_bitslice(&payload);
-                    acc
-                }));
-        }
-
-        unreachable!()
-    }
-
-    pub(crate) async fn read_packet_unchecked(&mut self) -> Result<BitVec> {
-        let mut state = AcsmaSocketReadPacketState::Pending;
-        // log::warn!("Reading packet in read_packet_unchecked");
-        while let Some(frame) = self.read_rx.recv().await {
-            let header = frame.header().clone();
-            // log::debug!("Receive frame {} type {}", header.seq, header.r#type);
-
-            match &mut state {
-                AcsmaSocketReadPacketState::Pending => {
-                    if let NonAckFrame::PacketBegin(_) = frame {
-                        state.begin();
-                        log::debug!("Reading packet begin");
-                    }
-                }
-                AcsmaSocketReadPacketState::Reading(ref mut bucket) => {
-                    if let NonAckFrame::PacketEnd(_) = frame {
-                        log::debug!("Reading packet end");
-                        break;
-                    } else if let NonAckFrame::Data(data) = frame {
-                        let payload = data.payload().unwrap();
-                        log::debug!("Reading frame {}", header.seq);
-                        bucket.entry(header.seq).or_insert(payload.to_owned());
-                    }
-                }
-            }
-        }
-
-        if let AcsmaSocketReadPacketState::Reading(bucket) = state {
-            return Ok(bucket
-                .into_iter()
-                .fold(BitVec::new(), |mut acc, (_, payload)| {
-                    acc.extend_from_bitslice(&payload);
-                    acc
-                }));
-        }
-
-        unreachable!()
+        let result = bucket.iter().fold(bitvec![], |mut acc, (_, payload)| {
+            acc.extend_from_bitslice(payload);
+            acc
+        });
+        Ok(result)
     }
 
     pub async fn serve(&mut self) -> Result<()> {
@@ -179,31 +116,28 @@ impl AcsmaSocketReader {
     }
 }
 
-enum AcsmaSocketReadPacketState {
-    Pending,
-    Reading(BTreeMap<usize, BitVec>),
-}
-
-impl AcsmaSocketReadPacketState {
-    fn begin(&mut self) {
-        *self = Self::Reading(BTreeMap::new());
-    }
-}
-
 #[derive(Clone)]
 pub struct AcsmaSocketWriter {
     config: AcsmaSocketConfig,
     write_tx: UnboundedSender<AcsmaSocketWriteTask>,
 }
 
+fn encode_packet(bits: &BitSlice, src: usize, dest: usize) -> impl Iterator<Item = DataFrame> + '_ {
+    let frames = bits.chunks(PAYLOAD_BITS_LEN);
+    let len = frames.len();
+    frames.enumerate().map(move |(index, chunk)| {
+        let flag = if index == len - 1 {
+            FrameFlag::EOP
+        } else {
+            FrameFlag::default()
+        };
+        DataFrame::new(dest, src, index, flag, chunk.to_owned())
+    })
+}
+
 impl AcsmaSocketWriter {
     pub async fn write(&self, dest: usize, bits: &BitSlice) -> Result<()> {
-        let frames = bits
-            .chunks(PAYLOAD_BITS_LEN)
-            .enumerate()
-            .map(|(index, chunk)| {
-                DataFrame::new(dest, self.config.address, index, chunk.to_owned())
-            });
+        let frames = encode_packet(bits, self.config.address, dest);
 
         for (index, frame) in frames.enumerate() {
             log::info!("Writing frame {}", index);
@@ -216,38 +150,14 @@ impl AcsmaSocketWriter {
         Ok(())
     }
 
-    pub async fn write_packet(&self, dest: usize, bits: &BitSlice) -> Result<()> {
-        let begin = PacketBeginFrame::new(dest, self.config.address);
-        let (tx, rx) = oneshot::channel();
-        self.write_tx.send((NonAckFrame::PacketBegin(begin), tx))?;
-        rx.await??;
+    pub async fn write_unchecked(&self, bits: &BitSlice) -> Result<()> {
+        let frames = encode_packet(bits, self.config.address, SOCKET_BROADCAST_ADDRESS);
 
-        log::info!("Writing packet begin");
-        self.write(dest, bits).await?;
-
-        let end = PacketEndFrame::new(dest, self.config.address);
-        let (tx, rx) = oneshot::channel();
-        self.write_tx.send((NonAckFrame::PacketEnd(end), tx))?;
-        rx.await??;
-        log::info!("Wrote packet end");
-
-        Ok(())
-    }
-
-    pub(crate) async fn write_packet_unchecked(&self, bits: &BitSlice) -> Result<()> {
-        let begin = PacketBeginFrame::new(SOCKET_BROADCAST_ADDRESS, self.config.address);
-        let (tx, rx) = oneshot::channel();
-        self.write_tx.send((NonAckFrame::PacketBegin(begin), tx))?;
-        rx.await??;
-
-        log::info!("Writing packet begin");
-        self.write(SOCKET_BROADCAST_ADDRESS, bits).await?;
-
-        let end = PacketEndFrame::new(SOCKET_BROADCAST_ADDRESS, self.config.address);
-        let (tx, rx) = oneshot::channel();
-        self.write_tx.send((NonAckFrame::PacketEnd(end), tx))?;
-        rx.await??;
-        log::info!("Wrote packet end");
+        for (_, frame) in frames.enumerate() {
+            let (tx, rx) = oneshot::channel();
+            self.write_tx.send((NonAckFrame::Data(frame), tx))?;
+            rx.await??;
+        }
 
         Ok(())
     }
@@ -286,7 +196,7 @@ async fn perf_daemon(
     send_tx: UnboundedSender<usize>,
 ) -> Result<()> {
     let bits = bitvec![usize, Lsb0; 0; PAYLOAD_BITS_LEN];
-    let frame = DataFrame::new(dest, config.address, 0, bits);
+    let frame = DataFrame::new(dest, config.address, 0, FrameFlag::default(), bits);
 
     loop {
         let (tx, rx) = oneshot::channel();
@@ -528,14 +438,6 @@ fn create_resp(header: &FrameHeader, non_ack: &NonAckFrame) -> BitVec {
         NonAckFrame::MacPingReq(_) => {
             // log::debug!("Receive MacPingReq for index {}", header.seq);
             Into::<BitVec>::into(MacPingRespFrame::new(header.src, header.dest))
-        }
-        NonAckFrame::PacketBegin(_) => {
-            // log::debug!("Receive PacketBegin for index {}", header.seq);
-            Into::<BitVec>::into(AckFrame::new(header.src, header.dest, header.seq))
-        }
-        NonAckFrame::PacketEnd(_) => {
-            // log::debug!("Receive PacketEnd for index {}", header.seq);
-            Into::<BitVec>::into(AckFrame::new(header.src, header.dest, header.seq))
         }
     }
 }

@@ -1,6 +1,6 @@
 use super::{
     builtin::{PAYLOAD_BITS_LEN, SOCKET_ACK_TIMEOUT, SOCKET_MAX_RESENDS},
-    frame::{AckFrame, DataFrame, Frame},
+    frame::{AckFrame, DataFrame, Frame, FrameFlag},
     socket::AcsmaIoError,
 };
 use crate::rather::{AtherInputStream, AtherOutputStream};
@@ -44,17 +44,22 @@ impl AcsmaIoStream {
 
 impl AcsmaIoStream {
     pub async fn write(&mut self, dest: usize, bits: &BitSlice) -> Result<()> {
-        let frames = bits
-            .chunks(PAYLOAD_BITS_LEN)
-            .enumerate()
-            .map(|(index, chunk)| {
-                Into::<BitVec>::into(DataFrame::new(
-                    dest,
-                    self.config.address,
-                    index,
-                    chunk.to_owned(),
-                ))
-            });
+        let frames = bits.chunks(PAYLOAD_BITS_LEN);
+        let len = frames.len();
+        let frames = frames.enumerate().map(|(index, chunk)| {
+            let flag = if index == len - 1 {
+                FrameFlag::EOP
+            } else {
+                FrameFlag::default()
+            };
+            Into::<BitVec>::into(DataFrame::new(
+                dest,
+                self.config.address,
+                index,
+                flag,
+                chunk.to_owned(),
+            ))
+        });
 
         for (index, frame) in frames.enumerate() {
             let mut retry = 0usize;
@@ -93,8 +98,8 @@ impl AcsmaIoStream {
         Ok(())
     }
 
-    pub async fn read(&mut self, src: usize, buf: &mut BitSlice) -> Result<()> {
-        let (mut bucket, mut total_len) = (BTreeMap::new(), 0usize);
+    pub async fn read(&mut self, src: usize) -> Result<BitVec> {
+        let mut bucket = BTreeMap::new();
         while let Some(bits) = self.istream.next().await {
             // log::debug!("Got frame {}", bits.len());
             if let Ok(frame) = DataFrame::try_from(bits) {
@@ -104,37 +109,24 @@ impl AcsmaIoStream {
                     let ack = AckFrame::new(header.src, header.dest, header.seq);
                     // log::debug!("Sending ACK for index {}", header.seq);
                     self.ostream.write(&Into::<BitVec>::into(ack)).await?;
-                    // log::debug!(
-                    //     "Sent ACK for index {}, total recieved {}",
-                    //     header.seq,
-                    //     total_len
-                    // );
 
                     let payload = frame.payload().unwrap();
-                    bucket.entry(header.seq).or_insert_with(|| {
-                        log::info!("Read frame with index {}", header.seq);
-                        total_len += payload.len();
-                        payload.to_owned()
-                    });
+                    bucket.entry(header.seq).or_insert(payload.to_owned());
 
-                    if total_len >= buf.len() {
+                    if header.flag.contains(FrameFlag::EOP) {
                         break;
                     }
                 }
             }
         }
 
-        log::info!("Read {} bits", total_len);
+        let result = bucket.iter().fold(bitvec![], |mut acc, (_, payload)| {
+            acc.extend_from_bitslice(payload);
+            acc
+        });
 
-        buf.copy_from_bitslice(
-            &bucket
-                .into_iter()
-                .fold(BitVec::new(), |mut acc, (_, payload)| {
-                    acc.extend_from_bitslice(&payload);
-                    acc
-                })[..buf.len()],
-        );
+        log::info!("Read {} frames, total {}", bucket.len(), result.len());
 
-        Ok(())
+        Ok(result)
     }
 }
