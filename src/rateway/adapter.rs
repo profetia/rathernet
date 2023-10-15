@@ -113,8 +113,13 @@ async fn adapter_daemon(config: AtewayAdapterConfig, device: AsioDevice) -> Resu
     let (write_tx, write_rx) = mpsc::unbounded_channel();
 
     let write_handle = tokio::spawn(write_daemon(tx_socket, write_rx));
-    let receive_handle = tokio::spawn(receive_daemon(config, write_tx.clone(), rx_socket, tx_tun));
-    let send_handle = tokio::spawn(send_daemon(write_tx, rx_tun));
+    let receive_handle = tokio::spawn(receive_daemon(
+        config.clone(),
+        write_tx.clone(),
+        rx_socket,
+        tx_tun,
+    ));
+    let send_handle = tokio::spawn(send_daemon(config, write_tx, rx_tun));
 
     tokio::try_join!(
         flatten(write_handle),
@@ -164,7 +169,7 @@ async fn receive_daemon(
                     if let Ok(echo) = icmp.echo() {
                         if echo.is_request() {
                             log::debug!("Receive ICMP echo request");
-                            let reply = create_reply(packet.id(), dest, src, echo).await?;
+                            let reply = create_icmp_reply(packet.id(), dest, src, echo).await?;
 
                             let (tx, rx) = oneshot::channel();
                             write_tx.send((reply, tx))?;
@@ -183,6 +188,7 @@ async fn receive_daemon(
 }
 
 async fn send_daemon(
+    config: AtewayAdapterConfig,
     write_tx: UnboundedSender<AtewayAdapterTask>,
     mut rx_tun: SplitStream<Framed<AsyncDevice, TunPacketCodec>>,
 ) -> Result<()> {
@@ -193,17 +199,19 @@ async fn send_daemon(
             let src = packet.source();
             let dest = packet.destination();
             let protocol = packet.protocol();
-
             log::info!("Send packet {} -> {} ({:?})", src, dest, protocol);
-            let (tx, rx) = oneshot::channel();
-            write_tx.send((bytes.to_owned(), tx))?;
-            rx.await??;
+
+            if src == config.address {
+                let (tx, rx) = oneshot::channel();
+                write_tx.send((bytes.to_owned(), tx))?;
+                rx.await??;
+            }
         }
     }
     Ok(())
 }
 
-pub async fn create_reply(
+pub async fn create_icmp_reply(
     id: u16,
     src: Ipv4Addr,
     dest: Ipv4Addr,

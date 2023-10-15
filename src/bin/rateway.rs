@@ -184,6 +184,7 @@ struct RatewayNatConfig {
     #[serde(deserialize_with = "deserialize_port")]
     port: u16,
     netmask: Ipv4Addr,
+    host: Ipv4Addr,
     #[serde(rename = "socket")]
     socket_config: RatewaySocketConfig,
 }
@@ -207,6 +208,7 @@ fn translate_nat(config: RatewayNatConfig, ather_config: AtherStreamConfig) -> A
         config.address,
         config.port,
         config.netmask,
+        config.host,
         AcsmaSocketConfig::new(config.socket_config.address, ather_config),
     )
 }
