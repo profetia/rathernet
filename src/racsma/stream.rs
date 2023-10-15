@@ -50,7 +50,7 @@ impl AcsmaIoStream {
             let flag = if index == len - 1 {
                 FrameFlag::EOP
             } else {
-                FrameFlag::default()
+                FrameFlag::empty()
             };
             Into::<BitVec>::into(DataFrame::new(
                 dest,

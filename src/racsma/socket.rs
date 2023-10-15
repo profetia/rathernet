@@ -128,7 +128,7 @@ fn encode_packet(bits: &BitSlice, src: usize, dest: usize) -> impl Iterator<Item
         let flag = if index == len - 1 {
             FrameFlag::EOP
         } else {
-            FrameFlag::default()
+            FrameFlag::empty()
         };
         DataFrame::new(dest, src, index, flag, chunk.to_owned())
     })
@@ -195,7 +195,7 @@ async fn perf_daemon(
     send_tx: UnboundedSender<usize>,
 ) -> Result<()> {
     let bits = bitvec![usize, Lsb0; 0; PAYLOAD_BITS_LEN];
-    let frame = DataFrame::new(dest, config.address, 0, FrameFlag::default(), bits);
+    let frame = DataFrame::new(dest, config.address, 0, FrameFlag::empty(), bits);
 
     loop {
         let (tx, rx) = oneshot::channel();
