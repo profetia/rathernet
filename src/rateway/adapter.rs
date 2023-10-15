@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::Result;
 use futures::{
-    future::LocalBoxFuture,
+    future::BoxFuture,
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
@@ -56,7 +56,7 @@ impl AtewayAdapterConfig {
 pub struct AtewayIoAdaper {
     config: AtewayAdapterConfig,
     device: AsioDevice,
-    inner: Option<LocalBoxFuture<'static, Result<()>>>,
+    inner: Option<BoxFuture<'static, Result<()>>>,
 }
 
 impl AtewayIoAdaper {
@@ -95,17 +95,19 @@ async fn adapter_daemon(config: AtewayAdapterConfig, device: AsioDevice) -> Resu
     let (tx_socket, rx_socket) =
         AcsmaIoSocket::try_from_device(config.socket_config.clone(), &device)?;
 
-    let mut tun_config = Configuration::default();
-    tun_config
-        .name(&config.name)
-        .address(config.address)
-        .netmask(config.netmask)
-        .up();
-    #[cfg(target_os = "windows")]
-    tun_config.platform(|config| {
-        config.initialize();
-    });
-    let dev = tun::create_as_async(&tun_config)?;
+    let dev = {
+        let mut tun_config = Configuration::default();
+        tun_config
+            .name(&config.name)
+            .address(config.address)
+            .netmask(config.netmask)
+            .up();
+        #[cfg(target_os = "windows")]
+        tun_config.platform(|config| {
+            config.initialize();
+        });
+        tun::create_as_async(&tun_config)
+    }?;
     let (tx_tun, rx_tun) = dev.into_framed().split();
 
     let (write_tx, write_rx) = mpsc::unbounded_channel();
