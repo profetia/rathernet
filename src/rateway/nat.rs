@@ -1,4 +1,4 @@
-use super::adapter::{create_reply, flatten, write_daemon, AtewayAdapterTask};
+use super::adapter::{create_icmp_reply, flatten, write_daemon, AtewayAdapterTask};
 use crate::{
     racsma::{AcsmaIoSocket, AcsmaSocketConfig, AcsmaSocketReader},
     rather::encode::DecodeToBytes,
@@ -6,11 +6,12 @@ use crate::{
 };
 use anyhow::Result;
 use futures::future::BoxFuture;
+use ipnet::Ipv4Net;
 use packet::{icmp, ip, Packet};
 use socket2::{Domain, Socket, Type};
 use std::{
     future::Future,
-    mem::{self, MaybeUninit},
+    mem::MaybeUninit,
     net::{Ipv4Addr, SocketAddr},
     pin::Pin,
     sync::Arc,
@@ -27,6 +28,7 @@ pub struct AtewayNatConfig {
     pub address: Ipv4Addr,
     pub port: u16,
     pub netmask: Ipv4Addr,
+    pub host: Ipv4Addr,
     pub socket_config: AcsmaSocketConfig,
 }
 
@@ -36,6 +38,7 @@ impl AtewayNatConfig {
         address: Ipv4Addr,
         port: u16,
         netmask: Ipv4Addr,
+        host: Ipv4Addr,
         socket_config: AcsmaSocketConfig,
     ) -> Self {
         Self {
@@ -43,6 +46,7 @@ impl AtewayNatConfig {
             address,
             port,
             netmask,
+            host,
             socket_config,
         }
     }
@@ -72,7 +76,7 @@ impl Future for AtewayIoNat {
         if this.inner.is_none() {
             let config = this.config.clone();
             let device = this.device.clone();
-            let inner = Box::pin(adapter_daemon(config, device));
+            let inner = Box::pin(nat_daemon(config, device));
             this.inner.replace(inner);
         }
         let inner = this.inner.as_mut().unwrap();
@@ -86,7 +90,7 @@ impl Future for AtewayIoNat {
     }
 }
 
-async fn adapter_daemon(config: AtewayNatConfig, device: AsioDevice) -> Result<()> {
+async fn nat_daemon(config: AtewayNatConfig, device: AsioDevice) -> Result<()> {
     let (tx_socket, rx_socket) =
         AcsmaIoSocket::try_from_device(config.socket_config.clone(), &device)?;
 
@@ -97,12 +101,12 @@ async fn adapter_daemon(config: AtewayNatConfig, device: AsioDevice) -> Result<(
 
     let write_handle = tokio::spawn(write_daemon(tx_socket, write_rx));
     let receive_handle = tokio::spawn(receive_daemon(
-        config,
+        config.clone(),
         write_tx.clone(),
         rx_socket,
         tunnel.clone(),
     ));
-    let send_handle = tokio::spawn(send_daemon(write_tx, tunnel));
+    let send_handle = tokio::spawn(send_daemon(config, write_tx, tunnel));
 
     tokio::try_join!(
         flatten(write_handle),
@@ -118,7 +122,7 @@ async fn receive_daemon(
     mut rx_socket: AcsmaSocketReader,
     tunnel: Arc<Socket>,
 ) -> Result<()> {
-    let baidu = "110.242.68.66".parse()?;
+    let net = Ipv4Net::with_netmask(config.address, config.netmask)?;
 
     while let Ok(packet) = rx_socket.read_unchecked().await {
         let bytes = DecodeToBytes::decode(&packet);
@@ -126,14 +130,14 @@ async fn receive_daemon(
             let src = packet.source();
             let dest = packet.destination();
             let protocol = packet.protocol();
-
             log::info!("Receive packet {} -> {} ({:?})", src, dest, protocol);
+
             if dest == config.address {
                 if let Ok(icmp) = icmp::Packet::new(packet.payload()) {
                     if let Ok(echo) = icmp.echo() {
                         if echo.is_request() {
                             log::debug!("Receive ICMP echo request");
-                            let reply = create_reply(packet.id(), dest, src, echo).await?;
+                            let reply = create_icmp_reply(packet.id(), dest, src, echo).await?;
 
                             let (tx, rx) = oneshot::channel();
                             write_tx.send((reply, tx))?;
@@ -142,13 +146,13 @@ async fn receive_daemon(
                         }
                     }
                 }
-
+            } else if !net.contains(&dest) {
                 let mut packet = packet.to_owned();
                 packet
-                    .set_source(config.address)?
-                    .set_destination(baidu)? // TODO: replace this with a real one.
+                    .set_source(config.host)?
+                    // TODO
                     .update_checksum()?;
-                tunnel.send_to(packet.as_ref(), &SocketAddr::new(baidu.into(), 0).into())?;
+                tunnel.send_to(packet.as_ref(), &SocketAddr::new(todo!(), todo!()).into())?;
             }
         }
     }
@@ -156,6 +160,7 @@ async fn receive_daemon(
 }
 
 async fn send_daemon(
+    config: AtewayNatConfig,
     write_tx: UnboundedSender<AtewayAdapterTask>,
     tunnel: Arc<Socket>,
 ) -> Result<()> {
@@ -164,17 +169,18 @@ async fn send_daemon(
             let src = packet.source();
             let dest = packet.destination();
             let protocol = packet.protocol();
-
             log::info!("Send packet {} -> {} ({:?})", src, dest, protocol);
 
-            packet
-                .set_source("192.168.1.3".parse()?)?
-                .set_destination("192.168.1.2".parse()?)?
-                .update_checksum()?;
+            if dest == config.host {
+                packet
+                    .set_destination("192.168.1.2".parse()?)?
+                    // TODO
+                    .update_checksum()?;
 
-            let (tx, rx) = oneshot::channel();
-            write_tx.send((packet.as_ref().to_owned(), tx))?;
-            rx.await??;
+                let (tx, rx) = oneshot::channel();
+                write_tx.send((packet.as_ref().to_owned(), tx))?;
+                rx.await??;
+            }
         }
     }
 
@@ -182,9 +188,9 @@ async fn send_daemon(
 }
 
 async fn read_packet(tunnel: Arc<Socket>) -> Result<Vec<u8>> {
-    let mut raw = [MaybeUninit::uninit(); 2048];
+    let mut raw = [MaybeUninit::uninit(); u16::MAX as usize];
     let (len, _) = tokio::task::spawn_blocking(move || tunnel.recv_from(&mut raw)).await??;
-    let bytes = unsafe { mem::transmute::<_, &[u8; 2048]>(&raw) }[..len].to_owned();
+    let bytes = raw.map(|x| unsafe { x.assume_init() })[..len].to_vec();
 
     Ok(bytes)
 }
