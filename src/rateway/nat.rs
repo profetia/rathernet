@@ -1,7 +1,7 @@
-use super::adapter::{create_reply, flatten};
+use super::adapter::{create_reply, flatten, write_daemon, AtewayAdapterTask};
 use crate::{
-    racsma::{AcsmaIoSocket, AcsmaSocketConfig, AcsmaSocketReader, AcsmaSocketWriter},
-    rather::encode::{DecodeToBytes, EncodeFromBytes},
+    racsma::{AcsmaIoSocket, AcsmaSocketConfig, AcsmaSocketReader},
+    rather::encode::DecodeToBytes,
     raudio::AsioDevice,
 };
 use anyhow::Result;
@@ -15,6 +15,10 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+};
+use tokio::sync::{
+    mpsc::{self, UnboundedSender},
+    oneshot,
 };
 
 #[derive(Clone)]
@@ -89,21 +93,28 @@ async fn adapter_daemon(config: AtewayNatConfig, device: AsioDevice) -> Result<(
     let tunnel = Arc::new(Socket::new(Domain::IPV4, Type::RAW, None)?);
     tunnel.set_header_included(true)?;
 
+    let (write_tx, write_rx) = mpsc::unbounded_channel();
+
+    let write_handle = tokio::spawn(write_daemon(tx_socket, write_rx));
     let receive_handle = tokio::spawn(receive_daemon(
         config,
-        tx_socket.clone(),
+        write_tx.clone(),
         rx_socket,
         tunnel.clone(),
     ));
-    let send_handle = tokio::spawn(send_daemon(tx_socket, tunnel));
+    let send_handle = tokio::spawn(send_daemon(write_tx, tunnel));
 
-    tokio::try_join!(flatten(receive_handle), flatten(send_handle))?;
+    tokio::try_join!(
+        flatten(write_handle),
+        flatten(receive_handle),
+        flatten(send_handle)
+    )?;
     Ok(())
 }
 
 async fn receive_daemon(
     config: AtewayNatConfig,
-    tx_socket: AcsmaSocketWriter,
+    write_tx: UnboundedSender<AtewayAdapterTask>,
     mut rx_socket: AcsmaSocketReader,
     tunnel: Arc<Socket>,
 ) -> Result<()> {
@@ -123,7 +134,10 @@ async fn receive_daemon(
                         if echo.is_request() {
                             log::debug!("Receive ICMP echo request");
                             let reply = create_reply(packet.id(), dest, src, echo).await?;
-                            tx_socket.write_unchecked(&reply.encode()).await?;
+
+                            let (tx, rx) = oneshot::channel();
+                            write_tx.send((reply, tx))?;
+                            rx.await??;
                             continue;
                         }
                     }
@@ -141,7 +155,10 @@ async fn receive_daemon(
     Ok(())
 }
 
-async fn send_daemon(tx_socket: AcsmaSocketWriter, tunnel: Arc<Socket>) -> Result<()> {
+async fn send_daemon(
+    write_tx: UnboundedSender<AtewayAdapterTask>,
+    tunnel: Arc<Socket>,
+) -> Result<()> {
     while let Ok(bytes) = read_packet(tunnel.clone()).await {
         if let Ok(ip::Packet::V4(mut packet)) = ip::Packet::new(bytes) {
             let src = packet.source();
@@ -155,8 +172,9 @@ async fn send_daemon(tx_socket: AcsmaSocketWriter, tunnel: Arc<Socket>) -> Resul
                 .set_destination("192.168.1.2".parse()?)?
                 .update_checksum()?;
 
-            let bits = packet.as_ref().encode();
-            tx_socket.write_unchecked(&bits).await?;
+            let (tx, rx) = oneshot::channel();
+            write_tx.send((packet.as_ref().to_owned(), tx))?;
+            rx.await??;
         }
     }
 
