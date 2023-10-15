@@ -1,4 +1,7 @@
-use std::time::Duration;
+use std::{
+    net::{Ipv4Addr, SocketAddrV4},
+    ops::Range,
+};
 
-pub const CALIBRATE_SEND_INTERVAL: Duration = Duration::from_millis(1000);
-pub const CALIBRATE_BUFFER_SIZE: usize = 20;
+pub const NAT_PORT_RANGE: Range<u16> = 10000..14999;
+pub const NAT_SENDTO_PLACEHOLDER: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0);
