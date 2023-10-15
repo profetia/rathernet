@@ -30,12 +30,6 @@ bitflags! {
     }
 }
 
-impl Default for FrameFlag {
-    fn default() -> Self {
-        Self::from_bits_truncate(0)
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct FrameHeader {
     pub dest: usize,
@@ -211,7 +205,7 @@ impl AckFrame {
                 src,
                 seq,
                 r#type: FrameType::ACK.into(),
-                flag: FrameFlag::default(),
+                flag: FrameFlag::empty(),
             },
         }
     }
@@ -271,7 +265,7 @@ impl MacPingReqFrame {
                 src,
                 seq: 0,
                 r#type: FrameType::MAC_PING_REQ.into(),
-                flag: FrameFlag::default(),
+                flag: FrameFlag::empty(),
             },
         }
     }
@@ -331,7 +325,7 @@ impl MacPingRespFrame {
                 src,
                 seq: 0,
                 r#type: FrameType::MAC_PING_RESP.into(),
-                flag: FrameFlag::default(),
+                flag: FrameFlag::empty(),
             },
         }
     }
