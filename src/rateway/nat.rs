@@ -5,7 +5,7 @@ use crate::{
     raudio::AsioDevice,
 };
 use anyhow::Result;
-use futures::future::LocalBoxFuture;
+use futures::future::BoxFuture;
 use packet::{icmp, ip, Packet};
 use socket2::{Domain, Socket, Type};
 use std::{
@@ -51,7 +51,7 @@ impl AtewayNatConfig {
 pub struct AtewayIoNat {
     config: AtewayNatConfig,
     device: AsioDevice,
-    inner: Option<LocalBoxFuture<'static, Result<()>>>,
+    inner: Option<BoxFuture<'static, Result<()>>>,
 }
 
 impl AtewayIoNat {
