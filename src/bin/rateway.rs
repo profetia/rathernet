@@ -4,10 +4,7 @@ use cpal::SupportedStreamConfig;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use rathernet::{
     racsma::AcsmaSocketConfig,
-    rateway::{
-        builtin::{CALIBRATE_BUFFER_SIZE, CALIBRATE_SEND_INTERVAL},
-        AtewayAdapterConfig, AtewayIoAdaper, AtewayIoNat, AtewayNatConfig,
-    },
+    rateway::{AtewayAdapterConfig, AtewayIoAdaper, AtewayIoNat, AtewayNatConfig},
     rather::AtherStreamConfig,
     raudio::AsioDevice,
 };
@@ -17,6 +14,7 @@ use std::{
     fs,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     str::FromStr,
+    time::Duration,
 };
 use tokio::{net::UdpSocket, time};
 
@@ -139,18 +137,18 @@ async fn main() -> Result<()> {
 
 async fn calibrate_send(socket: &UdpSocket) -> Result<()> {
     let mut rng = SmallRng::from_entropy();
-    let mut buf = [0u8; CALIBRATE_BUFFER_SIZE];
+    let mut buf = [0u8; 20];
     loop {
         rng.fill(&mut buf);
         socket.send(&buf).await?;
         println!("Sent {} bytes", buf.len());
         println!("{:?}", &buf);
-        time::sleep(CALIBRATE_SEND_INTERVAL).await;
+        time::sleep(Duration::from_millis(1000)).await;
     }
 }
 
 async fn calibrate_receive(socket: &UdpSocket, dest: &SocketAddr) -> Result<()> {
-    let mut buf = [0u8; CALIBRATE_BUFFER_SIZE];
+    let mut buf = [0u8; 20];
     loop {
         let len = socket.recv(&mut buf).await?;
         println!("Received {} bytes from {}", len, dest);

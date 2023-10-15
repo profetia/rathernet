@@ -1,18 +1,26 @@
-use super::adapter::{create_icmp_reply, flatten, write_daemon, AtewayAdapterTask};
+use super::{
+    adapter::{create_icmp_reply, flatten, write_daemon, AtewayAdapterTask},
+    builtin::NAT_PORT_RANGE,
+};
 use crate::{
     racsma::{AcsmaIoSocket, AcsmaSocketConfig, AcsmaSocketReader},
+    rateway::builtin::NAT_SENDTO_PLACEHOLDER,
     rather::encode::DecodeToBytes,
     raudio::AsioDevice,
 };
 use anyhow::Result;
 use futures::future::BoxFuture;
 use ipnet::Ipv4Net;
+use lru::LruCache;
 use packet::{icmp, ip, Packet};
+use parking_lot::Mutex;
 use socket2::{Domain, Socket, Type};
 use std::{
     future::Future,
     mem::MaybeUninit,
-    net::{Ipv4Addr, SocketAddr},
+    net::Ipv4Addr,
+    num::NonZeroUsize,
+    ops::Range,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -91,6 +99,8 @@ impl Future for AtewayIoNat {
 }
 
 async fn nat_daemon(config: AtewayNatConfig, device: AsioDevice) -> Result<()> {
+    let table = Arc::new(Mutex::new(AtewayNatTable::new(NAT_PORT_RANGE)));
+
     let (tx_socket, rx_socket) =
         AcsmaIoSocket::try_from_device(config.socket_config.clone(), &device)?;
 
@@ -105,8 +115,9 @@ async fn nat_daemon(config: AtewayNatConfig, device: AsioDevice) -> Result<()> {
         write_tx.clone(),
         rx_socket,
         tunnel.clone(),
+        table.clone(),
     ));
-    let send_handle = tokio::spawn(send_daemon(config, write_tx, tunnel));
+    let send_handle = tokio::spawn(send_daemon(config, write_tx, tunnel, table));
 
     tokio::try_join!(
         flatten(write_handle),
@@ -121,6 +132,7 @@ async fn receive_daemon(
     write_tx: UnboundedSender<AtewayAdapterTask>,
     mut rx_socket: AcsmaSocketReader,
     tunnel: Arc<Socket>,
+    table: Arc<Mutex<AtewayNatTable>>,
 ) -> Result<()> {
     let net = Ipv4Net::with_netmask(config.address, config.netmask)?;
 
@@ -148,11 +160,16 @@ async fn receive_daemon(
                 }
             } else if !net.contains(&dest) {
                 let mut packet = packet.to_owned();
-                packet
-                    .set_source(config.host)?
-                    // TODO
-                    .update_checksum()?;
-                tunnel.send_to(packet.as_ref(), &SocketAddr::new(todo!(), todo!()).into())?;
+                packet.set_source(config.host)?;
+
+                if icmp::Packet::new(packet.payload()).is_ok() {
+                    let mut guard = table.lock();
+                    let id = guard.forward((src, packet.id()));
+                    packet.set_id(id)?;
+                }
+
+                packet.update_checksum()?;
+                tunnel.send_to(packet.as_ref(), &NAT_SENDTO_PLACEHOLDER.into())?;
             }
         }
     }
@@ -163,6 +180,7 @@ async fn send_daemon(
     config: AtewayNatConfig,
     write_tx: UnboundedSender<AtewayAdapterTask>,
     tunnel: Arc<Socket>,
+    table: Arc<Mutex<AtewayNatTable>>,
 ) -> Result<()> {
     while let Ok(bytes) = read_packet(tunnel.clone()).await {
         if let Ok(ip::Packet::V4(mut packet)) = ip::Packet::new(bytes) {
@@ -172,11 +190,17 @@ async fn send_daemon(
             log::info!("Send packet {} -> {} ({:?})", src, dest, protocol);
 
             if dest == config.host {
-                packet
-                    .set_destination("192.168.1.2".parse()?)?
-                    // TODO
-                    .update_checksum()?;
+                if icmp::Packet::new(packet.payload()).is_ok() {
+                    let mut guard = table.lock();
+                    if let Some((src, id)) = guard.backward(packet.id()) {
+                        packet.set_source(src)?;
+                        packet.set_id(id)?;
+                    } else {
+                        continue;
+                    }
+                }
 
+                packet.update_checksum()?;
                 let (tx, rx) = oneshot::channel();
                 write_tx.send((packet.as_ref().to_owned(), tx))?;
                 rx.await??;
@@ -193,4 +217,65 @@ async fn read_packet(tunnel: Arc<Socket>) -> Result<Vec<u8>> {
     let bytes = raw.map(|x| unsafe { x.assume_init() })[..len].to_vec();
 
     Ok(bytes)
+}
+
+type AtewayNatEntry = (Ipv4Addr, u16);
+
+struct AtewayNatDynTable(LruCache<u16, Option<AtewayNatEntry>>);
+
+impl AtewayNatDynTable {
+    fn new(range: Range<u16>) -> Self {
+        let len = range.len();
+        let mut table = if len > 0 {
+            LruCache::new(NonZeroUsize::new(len).unwrap())
+        } else {
+            LruCache::unbounded()
+        };
+        for port in range {
+            table.put(port, None);
+        }
+        Self(table)
+    }
+
+    fn forward(&mut self, entry: AtewayNatEntry) -> u16 {
+        let pair = self.0.iter().find(|(_, &v)| v == Some(entry));
+        match pair {
+            Some((&port, _)) => {
+                self.0.promote(&port);
+                port
+            }
+            None => {
+                let (port, _) = self.0.pop_lru().unwrap();
+                self.0.put(port, Some(entry));
+                port
+            }
+        }
+    }
+
+    fn backward(&mut self, port: u16) -> Option<AtewayNatEntry> {
+        match self.0.get(&port) {
+            Some(Some(entry)) => Some(*entry),
+            _ => None,
+        }
+    }
+}
+
+struct AtewayNatTable {
+    dyn_table: AtewayNatDynTable,
+}
+
+impl AtewayNatTable {
+    fn new(range: Range<u16>) -> Self {
+        Self {
+            dyn_table: AtewayNatDynTable::new(range),
+        }
+    }
+
+    fn forward(&mut self, entry: AtewayNatEntry) -> u16 {
+        self.dyn_table.forward(entry)
+    }
+
+    fn backward(&mut self, port: u16) -> Option<AtewayNatEntry> {
+        self.dyn_table.backward(port)
+    }
 }
