@@ -116,7 +116,6 @@ impl AcsmaSocketReader {
     }
 }
 
-#[derive(Clone)]
 pub struct AcsmaSocketWriter {
     config: AcsmaSocketConfig,
     write_tx: UnboundedSender<AcsmaSocketWriteTask>,
