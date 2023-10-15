@@ -16,7 +16,13 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::task::JoinHandle;
+use tokio::{
+    sync::{
+        mpsc::{self, UnboundedReceiver, UnboundedSender},
+        oneshot::{self, Sender},
+    },
+    task::JoinHandle,
+};
 use tokio_util::codec::Framed;
 use tun::{AsyncDevice, Configuration, TunPacket, TunPacketCodec};
 
@@ -102,14 +108,21 @@ async fn adapter_daemon(config: AtewayAdapterConfig, device: AsioDevice) -> Resu
     let dev = tun::create_as_async(&tun_config)?;
     let (tx_tun, rx_tun) = dev.into_framed().split();
 
-    let receive_handle = tokio::spawn(receive_daemon(config, tx_socket.clone(), rx_socket, tx_tun));
-    let send_handle = tokio::spawn(send_daemon(tx_socket, rx_tun));
+    let (write_tx, write_rx) = mpsc::unbounded_channel();
 
-    tokio::try_join!(flatten(receive_handle), flatten(send_handle))?;
+    let write_handle = tokio::spawn(write_daemon(tx_socket, write_rx));
+    let receive_handle = tokio::spawn(receive_daemon(config, write_tx.clone(), rx_socket, tx_tun));
+    let send_handle = tokio::spawn(send_daemon(write_tx, rx_tun));
+
+    tokio::try_join!(
+        flatten(write_handle),
+        flatten(receive_handle),
+        flatten(send_handle)
+    )?;
     Ok(())
 }
 
-pub async fn flatten<T>(handle: JoinHandle<Result<T>>) -> Result<T> {
+pub(super) async fn flatten<T>(handle: JoinHandle<Result<T>>) -> Result<T> {
     match handle.await {
         Ok(Ok(result)) => Ok(result),
         Ok(Err(err)) => Err(err),
@@ -117,15 +130,27 @@ pub async fn flatten<T>(handle: JoinHandle<Result<T>>) -> Result<T> {
     }
 }
 
+pub(super) type AtewayAdapterTask = (Vec<u8>, Sender<Result<()>>);
+
+pub(super) async fn write_daemon(
+    tx_socket: AcsmaSocketWriter,
+    mut write_rx: UnboundedReceiver<AtewayAdapterTask>,
+) -> Result<()> {
+    while let Some((bytes, tx)) = write_rx.recv().await {
+        let result = tx_socket.write_unchecked(&bytes.encode()).await;
+        let _ = tx.send(result);
+    }
+    Ok(())
+}
+
 async fn receive_daemon(
     config: AtewayAdapterConfig,
-    tx_socket: AcsmaSocketWriter,
+    write_tx: UnboundedSender<AtewayAdapterTask>,
     mut rx_socket: AcsmaSocketReader,
     mut tx_tun: SplitSink<Framed<AsyncDevice, TunPacketCodec>, TunPacket>,
 ) -> Result<()> {
     while let Ok(packet) = rx_socket.read_unchecked().await {
         let bytes = DecodeToBytes::decode(&packet);
-        // log::debug!("Receive packet: {}", bytes.len());
         if let Ok(ip::Packet::V4(packet)) = ip::Packet::new(&bytes) {
             let src = packet.source();
             let dest = packet.destination();
@@ -138,7 +163,10 @@ async fn receive_daemon(
                         if echo.is_request() {
                             log::debug!("Receive ICMP echo request");
                             let reply = create_reply(packet.id(), dest, src, echo).await?;
-                            tx_socket.write_unchecked(&reply.encode()).await?;
+
+                            let (tx, rx) = oneshot::channel();
+                            write_tx.send((reply, tx))?;
+                            rx.await??;
                             continue;
                         }
                     }
@@ -153,7 +181,7 @@ async fn receive_daemon(
 }
 
 async fn send_daemon(
-    tx_socket: AcsmaSocketWriter,
+    write_tx: UnboundedSender<AtewayAdapterTask>,
     mut rx_tun: SplitStream<Framed<AsyncDevice, TunPacketCodec>>,
 ) -> Result<()> {
     while let Some(Ok(packet)) = rx_tun.next().await {
@@ -165,8 +193,9 @@ async fn send_daemon(
             let protocol = packet.protocol();
 
             log::info!("Send packet {} -> {} ({:?})", src, dest, protocol);
-            let bits = bytes.encode();
-            tx_socket.write_unchecked(&bits).await?;
+            let (tx, rx) = oneshot::channel();
+            write_tx.send((bytes.to_owned(), tx))?;
+            rx.await??;
         }
     }
     Ok(())
