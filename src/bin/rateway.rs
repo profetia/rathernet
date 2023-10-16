@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use cpal::SupportedStreamConfig;
-use rand::{rngs::SmallRng, Rng, RngCore, SeedableRng};
+use rand::{rngs::SmallRng, Rng, SeedableRng};
 use rathernet::{
     racsma::AcsmaSocketConfig,
     rateway::{AtewayAdapterConfig, AtewayIoAdaper, AtewayIoNat, AtewayNatConfig},

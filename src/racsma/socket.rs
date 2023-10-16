@@ -1,8 +1,9 @@
 use super::{
     builtin::{
-        PAYLOAD_BITS_LEN, SOCKET_ACK_TIMEOUT, SOCKET_BROADCAST_ADDRESS, SOCKET_FREE_THRESHOLD,
-        SOCKET_MAX_RANGE, SOCKET_MAX_RESENDS, SOCKET_PERF_INTERVAL, SOCKET_PERF_TIMEOUT,
-        SOCKET_PING_INTERVAL, SOCKET_PING_TIMEOUT, SOCKET_RECIEVE_TIMEOUT, SOCKET_SLOT_TIMEOUT,
+        PAYLOAD_BITS_LEN, SEQ_BITS_LEN, SOCKET_ACK_TIMEOUT, SOCKET_BROADCAST_ADDRESS,
+        SOCKET_FREE_THRESHOLD, SOCKET_JAR_CAPACITY, SOCKET_MAX_RANGE, SOCKET_MAX_RESENDS,
+        SOCKET_PERF_INTERVAL, SOCKET_PERF_TIMEOUT, SOCKET_PING_INTERVAL, SOCKET_PING_TIMEOUT,
+        SOCKET_RECIEVE_TIMEOUT, SOCKET_SLOT_TIMEOUT,
     },
     frame::{
         AckFrame, AcsmaFrame, DataFrame, Frame, FrameFlag, FrameHeader, MacPingReqFrame,
@@ -17,6 +18,7 @@ use anyhow::Result;
 use bitvec::prelude::*;
 use log;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
+use ringbuffer::{AllocRingBuffer, RingBuffer};
 use std::{
     collections::BTreeMap,
     mem,
@@ -122,6 +124,9 @@ pub struct AcsmaSocketWriter {
 }
 
 fn encode_packet(bits: &BitSlice, src: usize, dest: usize) -> impl Iterator<Item = DataFrame> + '_ {
+    let mut rng = rand::thread_rng();
+    let base = rng.gen_range(0..((1 << SEQ_BITS_LEN) - bits.len()));
+
     let frames = bits.chunks(PAYLOAD_BITS_LEN);
     let len = frames.len();
     frames.enumerate().map(move |(index, chunk)| {
@@ -130,7 +135,7 @@ fn encode_packet(bits: &BitSlice, src: usize, dest: usize) -> impl Iterator<Item
         } else {
             FrameFlag::empty()
         };
-        DataFrame::new(dest, src, index, flag, chunk.to_owned())
+        DataFrame::new(dest, src, base + index, flag, chunk.to_owned())
     })
 }
 
@@ -299,6 +304,7 @@ async fn socket_daemon(
     let mut rng = SmallRng::from_entropy();
     let mut write_state: Option<AcsmaSocketWriteTimer> = None;
     let mut write_monitor = AcsmaSocketWriteMonitor::new(write_monitor);
+    let mut read_jar = AllocRingBuffer::new(SOCKET_JAR_CAPACITY);
     loop {
         // log::debug!("----------State machine loop----------");
         // match &write_state {
@@ -322,7 +328,13 @@ async fn socket_daemon(
                             // log::debug!("Sending ACK | MacPingResp for index {}", header.seq);
                             write_ather.write(&bits).await?;
                             // log::debug!("Sent ACK | MacPingResp for index {}", header.seq);
-                            let _ = read_tx.send(non_ack);
+                            if read_jar.contains(&header.seq) {
+                                // log::debug!("Recieve frame {} but already in jar", header.seq);
+                            } else {
+                                // log::debug!("Recieve frame {} and not in jar", header.seq);
+                                read_jar.push(header.seq);
+                                let _ = read_tx.send(non_ack);
+                            }
                         }
                         _ => {
                             // log::debug!("Recieve ACK | MacPingResp for index {}", header.seq);
