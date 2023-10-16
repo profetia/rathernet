@@ -169,7 +169,7 @@ async fn receive_daemon(
 
             if dest == config.address {
                 if protocol == Protocol::Icmp {
-                    log::info!("Receive packet {} -> {} ({:?})", src, dest, protocol);
+                    log::debug!("Receive packet {} -> {} ({:?})", src, dest, protocol);
                     let mut icmp = icmp::Packet::new(packet.payload_mut())?;
                     if let Some(mut echo) = icmp.echo_mut().ok().filter(|echo| echo.is_request()) {
                         log::debug!("Reply to ICMP echo request");
@@ -182,7 +182,7 @@ async fn receive_daemon(
                         write_packet(&write_tx, packet.as_ref().to_owned()).await?;
                     }
                 } else if protocol == Protocol::Udp {
-                    log::info!("Receive packet {} -> {} ({:?})", src, dest, protocol);
+                    log::debug!("Receive packet {} -> {} ({:?})", src, dest, protocol);
                 } else {
                     continue;
                 }
@@ -211,7 +211,7 @@ async fn send_daemon(
                 if protocol != Protocol::Icmp && protocol != Protocol::Udp {
                     continue;
                 }
-                log::info!("Send packet {} -> {} ({:?})", src, dest, protocol);
+                log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);
 
                 let (tx, rx) = oneshot::channel();
                 write_tx.send((bytes.to_owned(), tx))?;
