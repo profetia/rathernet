@@ -13,15 +13,15 @@ use futures::future::BoxFuture;
 use ipnet::Ipv4Net;
 use lru::LruCache;
 use packet::{
-    icmp,
+    ether, icmp,
     ip::{self, Protocol},
     Packet, PacketMut,
 };
 use parking_lot::Mutex;
+use pcap::{Active, Capture, Device};
 use socket2::{Domain, Socket, Type};
 use std::{
     future::Future,
-    mem::MaybeUninit,
     net::Ipv4Addr,
     num::NonZeroUsize,
     ops::Range,
@@ -29,7 +29,11 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-use tokio::sync::mpsc::{self, UnboundedSender};
+use thiserror::Error;
+use tokio::{
+    sync::mpsc::{self, UnboundedSender},
+    task,
+};
 
 #[derive(Clone)]
 pub struct AtewayNatConfig {
@@ -96,14 +100,33 @@ impl Future for AtewayIoNat {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum AtewayIoError {
+    #[error("Device not found for {0}")]
+    DeviceNotFound(Ipv4Addr),
+}
+
+fn find_device(ip: Ipv4Addr) -> Result<Device> {
+    for device in Device::list()? {
+        if device.addresses.iter().any(|addr| addr.addr == ip) {
+            return Ok(device);
+        }
+    }
+    Err(AtewayIoError::DeviceNotFound(ip).into())
+}
+
 async fn nat_daemon(config: AtewayNatConfig, device: AsioDevice) -> Result<()> {
     let table = Arc::new(Mutex::new(AtewayNatTable::new(NAT_PORT_RANGE)));
 
     let (tx_socket, rx_socket) =
         AcsmaIoSocket::try_from_device(config.socket_config.clone(), &device)?;
 
-    let tunnel = Arc::new(Socket::new(Domain::IPV4, Type::RAW, None)?);
+    let tunnel = Socket::new(Domain::IPV4, Type::RAW, None)?;
     tunnel.set_header_included(true)?;
+
+    let device = find_device(config.host)?;
+    let mut cap = Capture::from_device(device)?.immediate_mode(true).open()?;
+    cap.filter(&format!("ip dst host {}", config.host), true)?;
 
     let (write_tx, write_rx) = mpsc::unbounded_channel();
 
@@ -112,10 +135,10 @@ async fn nat_daemon(config: AtewayNatConfig, device: AsioDevice) -> Result<()> {
         config.clone(),
         write_tx.clone(),
         rx_socket,
-        tunnel.clone(),
+        tunnel,
         table.clone(),
     ));
-    let send_handle = tokio::spawn(send_daemon(config, write_tx, tunnel, table));
+    let send_handle = tokio::spawn(send_daemon(config, write_tx, cap, table));
 
     tokio::try_join!(
         flatten(write_handle),
@@ -129,7 +152,7 @@ async fn receive_daemon(
     config: AtewayNatConfig,
     write_tx: UnboundedSender<AtewayAdapterTask>,
     mut rx_socket: AcsmaSocketReader,
-    tunnel: Arc<Socket>,
+    tunnel: Socket,
     table: Arc<Mutex<AtewayNatTable>>,
 ) -> Result<()> {
     let net = Ipv4Net::with_netmask(config.address, config.netmask)?;
@@ -180,11 +203,13 @@ async fn receive_daemon(
 async fn send_daemon(
     config: AtewayNatConfig,
     write_tx: UnboundedSender<AtewayAdapterTask>,
-    tunnel: Arc<Socket>,
+    mut cap: Capture<Active>,
     table: Arc<Mutex<AtewayNatTable>>,
 ) -> Result<()> {
-    while let Ok(bytes) = read_packet(tunnel.clone()).await {
-        if let Ok(ip::Packet::V4(mut packet)) = ip::Packet::new(bytes) {
+    while let Ok(capture) = task::block_in_place(|| cap.next_packet()) {
+        let eth = ether::Packet::new(capture.data)?;
+        if eth.protocol() == ether::Protocol::Ipv4 {
+            let mut packet = ip::v4::Packet::new(eth.payload().to_owned())?;
             let src = packet.source();
             let dest = packet.destination();
             let protocol = packet.protocol();
@@ -214,14 +239,6 @@ async fn send_daemon(
     }
 
     Ok(())
-}
-
-async fn read_packet(tunnel: Arc<Socket>) -> Result<Vec<u8>> {
-    let mut raw = [MaybeUninit::uninit(); u16::MAX as usize];
-    let (len, _) = tokio::task::spawn_blocking(move || tunnel.recv_from(&mut raw)).await??;
-    let bytes = raw.map(|x| unsafe { x.assume_init() })[..len].to_vec();
-
-    Ok(bytes)
 }
 
 type AtewayNatEntry = (Ipv4Addr, u16);
