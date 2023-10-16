@@ -1,10 +1,10 @@
 use super::{
-    adapter::{create_icmp_reply, flatten, write_daemon, AtewayAdapterTask},
+    adapter::{flatten, write_daemon, AtewayAdapterTask},
     builtin::NAT_PORT_RANGE,
 };
 use crate::{
     racsma::{AcsmaIoSocket, AcsmaSocketConfig, AcsmaSocketReader},
-    rateway::builtin::NAT_SENDTO_PLACEHOLDER,
+    rateway::{adapter::write_packet, builtin::NAT_SENDTO_PLACEHOLDER},
     rather::encode::DecodeToBytes,
     raudio::AsioDevice,
 };
@@ -12,7 +12,11 @@ use anyhow::Result;
 use futures::future::BoxFuture;
 use ipnet::Ipv4Net;
 use lru::LruCache;
-use packet::{icmp, ip, Packet};
+use packet::{
+    icmp,
+    ip::{self, Protocol},
+    Packet, PacketMut,
+};
 use parking_lot::Mutex;
 use socket2::{Domain, Socket, Type};
 use std::{
@@ -25,10 +29,7 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-use tokio::sync::{
-    mpsc::{self, UnboundedSender},
-    oneshot,
-};
+use tokio::sync::mpsc::{self, UnboundedSender};
 
 #[derive(Clone)]
 pub struct AtewayNatConfig {
@@ -142,27 +143,30 @@ async fn receive_daemon(
             log::info!("Receive packet {} -> {} ({:?})", src, dest, protocol);
 
             if dest == config.address {
-                if let Ok(icmp) = icmp::Packet::new(packet.payload()) {
-                    if let Ok(echo) = icmp.echo() {
-                        if echo.is_request() {
-                            log::debug!("Receive ICMP echo request");
-                            let reply = create_icmp_reply(packet.id(), dest, src, echo).await?;
-
-                            let (tx, rx) = oneshot::channel();
-                            write_tx.send((reply, tx))?;
-                            rx.await??;
-                            continue;
-                        }
+                if protocol == Protocol::Icmp {
+                    let icmp = icmp::Packet::new(packet.payload())?;
+                    if let Some(echo) = icmp.echo().ok().filter(|echo| echo.is_request()) {
+                        log::debug!("Reply to ICMP echo request");
+                        let mut reply = echo.to_owned();
+                        reply.make_reply()?;
+                        write_packet(&write_tx, reply.as_ref().to_owned()).await?;
+                        continue;
                     }
                 }
             } else if !net.contains(&dest) {
                 let mut packet = packet.to_owned();
                 packet.set_source(config.host)?;
 
-                if icmp::Packet::new(packet.payload()).is_ok() {
-                    let mut guard = table.lock();
-                    let id = guard.forward((src, packet.id()));
-                    packet.set_id(id)?;
+                if protocol == Protocol::Icmp {
+                    let mut icmp = icmp::Packet::new(packet.payload_mut())?;
+                    if let Ok(mut echo) = icmp.echo_mut() {
+                        let mut guard = table.lock();
+                        let port = guard.forward((src, echo.identifier()));
+                        echo.set_identifier(port)?;
+                    }
+                } else if protocol == Protocol::Udp {
+                } else {
+                    continue;
                 }
 
                 packet.update_checksum()?;
@@ -187,20 +191,24 @@ async fn send_daemon(
             log::info!("Send packet {} -> {} ({:?})", src, dest, protocol);
 
             if dest == config.host {
-                if icmp::Packet::new(packet.payload()).is_ok() {
-                    let mut guard = table.lock();
-                    if let Some((src, id)) = guard.backward(packet.id()) {
-                        packet.set_source(src)?;
-                        packet.set_id(id)?;
-                    } else {
-                        continue;
+                if protocol == Protocol::Icmp {
+                    let mut icmp = icmp::Packet::new(packet.payload_mut())?;
+                    if let Ok(mut echo) = icmp.echo_mut() {
+                        let mut guard = table.lock();
+                        if let Some((src, id)) = guard.backward(echo.identifier()) {
+                            echo.set_identifier(id)?;
+                            packet.set_source(src)?;
+                        } else {
+                            continue;
+                        }
                     }
+                } else if protocol == Protocol::Udp {
+                } else {
+                    continue;
                 }
 
                 packet.update_checksum()?;
-                let (tx, rx) = oneshot::channel();
-                write_tx.send((packet.as_ref().to_owned(), tx))?;
-                rx.await??;
+                write_packet(&write_tx, packet.as_ref().to_owned()).await?;
             }
         }
     }
