@@ -124,18 +124,20 @@ pub struct AcsmaSocketWriter {
 }
 
 fn encode_packet(bits: &BitSlice, src: usize, dest: usize) -> impl Iterator<Item = DataFrame> + '_ {
-    let mut rng = rand::thread_rng();
-    let base = rng.gen_range(0..((1 << SEQ_BITS_LEN) - bits.len()));
-
     let frames = bits.chunks(PAYLOAD_BITS_LEN);
     let len = frames.len();
+
+    let mut rng = rand::thread_rng();
+    let base = rng.gen_range(0..(1 << SEQ_BITS_LEN));
+    
     frames.enumerate().map(move |(index, chunk)| {
         let flag = if index == len - 1 {
             FrameFlag::EOP
         } else {
             FrameFlag::empty()
         };
-        DataFrame::new(dest, src, base + index, flag, chunk.to_owned())
+        let seq = (base + index) % (1 << SEQ_BITS_LEN);
+        DataFrame::new(dest, src, seq, flag, chunk.to_owned())
     })
 }
 
