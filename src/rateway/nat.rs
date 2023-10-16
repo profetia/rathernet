@@ -15,7 +15,7 @@ use lru::LruCache;
 use packet::{
     ether, icmp,
     ip::{self, Protocol},
-    Packet, PacketMut,
+    udp, Packet, PacketMut,
 };
 use parking_lot::Mutex;
 use pcap::{Active, Capture, Device};
@@ -170,7 +170,7 @@ async fn receive_daemon(
                     let mut icmp = icmp::Packet::new(packet.payload_mut())?;
                     if let Some(mut echo) = icmp.echo_mut().ok().filter(|echo| echo.is_request()) {
                         log::debug!("Reply to ICMP echo request");
-                        echo.make_reply()?.checked();                        
+                        echo.make_reply()?.checked();
                         packet
                             .set_destination(src)?
                             .set_source(dest)?
@@ -188,11 +188,29 @@ async fn receive_daemon(
                     if let Ok(mut echo) = icmp.echo_mut() {
                         let mut guard = table.lock();
                         let port = guard.forward((src, echo.identifier()));
-                        log::debug!("Forward {}:{} to {}:{}", src, echo.identifier(), config.host, port);
-                        echo.set_identifier(port)?.checked();                        
+                        log::debug!(
+                            "Forward {}:{} to {}:{}",
+                            src,
+                            echo.identifier(),
+                            config.host,
+                            port
+                        );
+                        echo.set_identifier(port)?.checked();
                     }
                 } else if protocol == Protocol::Udp {
                     log::debug!("Receive packet {} -> {} ({:?})", src, dest, protocol);
+                    let enclosing = packet.to_owned();
+                    let mut udp = udp::Packet::new(packet.payload_mut())?;
+                    let mut guard = table.lock();
+                    let port = guard.forward((src, udp.source()));
+                    log::debug!(
+                        "Forward {}:{} to {}:{}",
+                        src,
+                        udp.source(),
+                        config.host,
+                        port
+                    );
+                    udp.set_source(port)?.checked(&ip::Packet::V4(enclosing));
                 } else {
                     continue;
                 }
@@ -226,7 +244,13 @@ async fn send_daemon(
                     if let Ok(mut echo) = icmp.echo_mut() {
                         let mut guard = table.lock();
                         if let Some((addr, port)) = guard.backward(echo.identifier()) {
-                            log::debug!("Backward {}:{} to {}:{}", config.address, echo.identifier(), src, port);
+                            log::debug!(
+                                "Backward {}:{} to {}:{}",
+                                config.address,
+                                echo.identifier(),
+                                src,
+                                port
+                            );
                             echo.set_identifier(port)?.checked();
                             packet.set_destination(addr)?;
                         } else {
@@ -235,6 +259,23 @@ async fn send_daemon(
                     }
                 } else if protocol == Protocol::Udp {
                     log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);
+                    let enclosing = packet.to_owned();
+                    let mut udp = udp::Packet::new(packet.payload_mut())?;
+                    let mut guard = table.lock();
+                    if let Some((addr, port)) = guard.backward(udp.destination()) {
+                        log::debug!(
+                            "Backward {}:{} to {}:{}",
+                            config.address,
+                            udp.destination(),
+                            src,
+                            port
+                        );
+                        udp.set_destination(port)?
+                            .checked(&ip::Packet::V4(enclosing));
+                        packet.set_destination(addr)?;
+                    } else {
+                        continue;
+                    }
                 } else {
                     continue;
                 }
