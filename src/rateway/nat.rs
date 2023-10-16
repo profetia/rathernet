@@ -34,7 +34,6 @@ use tokio::sync::{
 pub struct AtewayNatConfig {
     pub name: String,
     pub address: Ipv4Addr,
-    pub port: u16,
     pub netmask: Ipv4Addr,
     pub host: Ipv4Addr,
     pub socket_config: AcsmaSocketConfig,
@@ -44,7 +43,6 @@ impl AtewayNatConfig {
     pub fn new(
         name: String,
         address: Ipv4Addr,
-        port: u16,
         netmask: Ipv4Addr,
         host: Ipv4Addr,
         socket_config: AcsmaSocketConfig,
@@ -52,7 +50,6 @@ impl AtewayNatConfig {
         Self {
             name,
             address,
-            port,
             netmask,
             host,
             socket_config,

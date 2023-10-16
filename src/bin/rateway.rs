@@ -179,8 +179,6 @@ struct RatewayNatConfig {
     name: String,
     #[serde(rename = "ip")]
     address: Ipv4Addr,
-    #[serde(deserialize_with = "deserialize_port")]
-    port: u16,
     netmask: Ipv4Addr,
     host: Ipv4Addr,
     #[serde(rename = "socket")]
@@ -204,19 +202,10 @@ fn translate_nat(config: RatewayNatConfig, ather_config: AtherStreamConfig) -> A
     AtewayNatConfig::new(
         config.name,
         config.address,
-        config.port,
         config.netmask,
         config.host,
         AcsmaSocketConfig::new(config.socket_config.address, ather_config),
     )
-}
-
-fn deserialize_port<'de, D>(deserializer: D) -> Result<u16, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let port = String::deserialize(deserializer)?;
-    port.parse::<u16>().map_err(Error::custom)
 }
 
 fn deserialize_mac<'de, D>(deserializer: D) -> Result<usize, D::Error>
