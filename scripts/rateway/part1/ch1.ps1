@@ -1,10 +1,12 @@
-git checkout -b part1 0288e7b
+git checkout -b part1 fcdbc73
 
-# Start node 2 as the receiver
-cargo run --release --bin rateway -- calibrate -t read -a "<ipv4:port>"
+cargo build --release
 
-# Start node 1 as the sender
-cargo run --release --bin rateway -- calibrate -t write -a "<ipv4:port>" -p "<ipv4:port>"
+# Start node 3 as the receiver
+./target/release/rateway udp receive -a "<ipv4:port>"
+
+# Start node 2 as the sender
+./target/release/rateway udp send -a "<ipv4:port>" "<ipv4:port>"
 
 git checkout main
 
