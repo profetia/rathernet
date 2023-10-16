@@ -180,6 +180,7 @@ async fn receive_daemon(
                             .update_checksum()?;
 
                         write_packet(&write_tx, packet.as_ref().to_owned()).await?;
+                        continue;
                     }
                 } else if protocol == Protocol::Udp {
                     log::debug!("Receive packet {} -> {} ({:?})", src, dest, protocol);
@@ -213,9 +214,7 @@ async fn send_daemon(
                 }
                 log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);
 
-                let (tx, rx) = oneshot::channel();
-                write_tx.send((bytes.to_owned(), tx))?;
-                rx.await??;
+                write_packet(&write_tx, bytes.to_owned()).await?;
             }
         }
     }
