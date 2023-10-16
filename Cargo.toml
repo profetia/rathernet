@@ -25,6 +25,7 @@ pcap = "1.1.0"
 rand = { version = "0.8.5", features = ["small_rng"] }
 realfft = "3.3.0"
 reed-solomon-erasure = { version = "6.0.0", features = ["simd-accel"] }
+ringbuffer = "0.15.0"
 rodio = "0.17.1"
 serde = { version = "1.0.189", features = ["derive"] }
 socket2 = "0.5.4"
