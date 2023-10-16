@@ -9,7 +9,11 @@ use futures::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
-use packet::{icmp, ip, Builder, Packet};
+use packet::{
+    icmp,
+    ip::{self, Protocol},
+    Packet,
+};
 use std::{
     future::Future,
     net::Ipv4Addr,
@@ -165,18 +169,18 @@ async fn receive_daemon(
 
             log::info!("Receive packet {} -> {} ({:?})", src, dest, protocol);
             if dest == config.address {
-                if let Ok(icmp) = icmp::Packet::new(packet.payload()) {
-                    if let Ok(echo) = icmp.echo() {
-                        if echo.is_request() {
-                            log::debug!("Receive ICMP echo request");
-                            let reply = create_icmp_reply(packet.id(), dest, src, echo).await?;
-
-                            let (tx, rx) = oneshot::channel();
-                            write_tx.send((reply, tx))?;
-                            rx.await??;
-                            continue;
-                        }
+                if protocol == Protocol::Icmp {
+                    let icmp = icmp::Packet::new(packet.payload())?;
+                    if let Some(echo) = icmp.echo().ok().filter(|echo| echo.is_request()) {
+                        log::debug!("Reply to ICMP echo request");
+                        let mut reply = echo.to_owned();
+                        reply.make_reply()?;
+                        write_packet(&write_tx, reply.as_ref().to_owned()).await?;
+                        continue;
                     }
+                } else if protocol == Protocol::Udp {
+                } else {
+                    continue;
                 }
 
                 let packet = TunPacket::new(bytes);
@@ -202,6 +206,10 @@ async fn send_daemon(
             log::info!("Send packet {} -> {} ({:?})", src, dest, protocol);
 
             if src == config.address {
+                if protocol != Protocol::Icmp && protocol != Protocol::Udp {
+                    continue;
+                }
+
                 let (tx, rx) = oneshot::channel();
                 write_tx.send((bytes.to_owned(), tx))?;
                 rx.await??;
@@ -211,23 +219,12 @@ async fn send_daemon(
     Ok(())
 }
 
-pub async fn create_icmp_reply(
-    id: u16,
-    src: Ipv4Addr,
-    dest: Ipv4Addr,
-    req: icmp::echo::Packet<&&[u8]>,
-) -> Result<Vec<u8>> {
-    let reply = ip::v4::Builder::default()
-        .id(id)?
-        .ttl(64)?
-        .source(src)?
-        .destination(dest)?
-        .icmp()?
-        .echo()?
-        .reply()?
-        .identifier(req.identifier())?
-        .sequence(req.sequence())?
-        .payload(req.payload())?
-        .build()?;
-    Ok(reply)
+pub(super) async fn write_packet(
+    write_tx: &UnboundedSender<AtewayAdapterTask>,
+    bytes: Vec<u8>,
+) -> Result<()> {
+    let (tx, rx) = oneshot::channel();
+    write_tx.send((bytes, tx))?;
+    rx.await??;
+    Ok(())
 }
