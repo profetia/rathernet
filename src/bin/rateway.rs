@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use cpal::SupportedStreamConfig;
-use rand::{rngs::SmallRng, Rng, SeedableRng};
+use rand::{rngs::SmallRng, Rng, RngCore, SeedableRng};
 use rathernet::{
     racsma::AcsmaSocketConfig,
     rateway::{AtewayAdapterConfig, AtewayIoAdaper, AtewayIoNat, AtewayNatConfig},
@@ -12,8 +12,9 @@ use rodio::DeviceTrait;
 use serde::{de::Error, Deserialize};
 use std::{
     fs,
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-    str::FromStr,
+    io::Write,
+    net::{Ipv4Addr, SocketAddrV4},
+    path::PathBuf,
     time::Duration,
 };
 use tokio::{net::UdpSocket, time};
@@ -28,17 +29,10 @@ struct RatewayCli {
 
 #[derive(Subcommand, Debug)]
 enum SubCommand {
-    /// Calibrate the ateway by transmitting a file in UDP.
-    Calibrate {
-        /// The address that will be used to send the file.
-        #[clap(short, long, default_value = "127.0.0.1:8080")]
-        address: String,
-        /// The peer address that will receive the file.
-        #[clap(short, long, default_value = "127.0.0.1:8080")]
-        peer: String,
-        /// The type of calibration to perform.
-        #[clap(short, long, default_value = "duplex")]
-        r#type: CalibrateType,
+    /// Transmit a file line by line in UDP.
+    Udp {
+        #[clap(subcommand)]
+        cmd: UdpSubCommand,
     },
     /// Install rathernet rateway as a network adapter to the athernet.
     Install {
@@ -59,6 +53,31 @@ enum CalibrateType {
     Read,
     Write,
     Duplex,
+}
+
+#[derive(Subcommand, Debug)]
+enum UdpSubCommand {
+    /// Transmit a file line by line in UDP.
+    Send {
+        /// The address that will be used to send the file.
+        #[clap(short, long, default_value = "127.0.0.1:80")]
+        address: SocketAddrV4,
+        /// The peer address that will receive the file.
+        #[arg(required = true)]
+        peer: SocketAddrV4,
+        /// The path to the file to send.
+        #[clap(short, long)]
+        source: Option<PathBuf>,
+    },
+    /// Receive a file line by line in UDP.
+    Receive {
+        /// The address that will be used to receive the file.
+        #[clap(short, long, default_value = "127.0.0.1:80")]
+        address: SocketAddrV4,
+        /// The path to the file to store the received data.
+        #[clap(short, long)]
+        file: Option<PathBuf>,
+    },
 }
 
 fn create_device(device: &Option<String>) -> Result<AsioDevice> {
@@ -86,26 +105,6 @@ async fn main() -> Result<()> {
     env_logger::init();
     let cli = RatewayCli::parse();
     match cli.subcmd {
-        SubCommand::Calibrate {
-            address,
-            peer,
-            r#type,
-        } => {
-            let dest = SocketAddr::from(SocketAddrV4::from_str(&peer)?);
-            let socket = UdpSocket::bind(address).await?;
-            socket.connect(dest).await?;
-
-            let send_future = calibrate_send(&socket);
-            let receive_future = calibrate_receive(&socket, &dest);
-
-            match r#type {
-                CalibrateType::Read => receive_future.await?,
-                CalibrateType::Write => send_future.await?,
-                CalibrateType::Duplex => {
-                    tokio::try_join!(send_future, receive_future)?;
-                }
-            }
-        }
         SubCommand::Install { config } => {
             let config = fs::read_to_string(config)?;
             let config: RatewayAdapterConfig = toml::from_str(&config)?;
@@ -130,30 +129,57 @@ async fn main() -> Result<()> {
             let nat = AtewayIoNat::new(nat_config, device);
             nat.await?;
         }
+        SubCommand::Udp { cmd } => match cmd {
+            UdpSubCommand::Send {
+                address,
+                peer,
+                source,
+            } => {
+                let socket = UdpSocket::bind(address).await?;
+                if let Some(source) = source {
+                    let source = fs::read_to_string(source)?;
+                    for line in source.lines() {
+                        socket.send_to(line.as_bytes(), peer).await?;
+                    }
+                } else {
+                    eprintln!("No source file specified, sending random data.");
+                    let mut rng = SmallRng::from_entropy();
+                    let mut buffer = [0u8; 20];
+                    loop {
+                        for byte in buffer.iter_mut() {
+                            *byte = rng.gen_range(0x20..0x7F) as u8;
+                        }
+                        socket.send_to(&buffer, peer).await?;
+                        time::sleep(Duration::from_millis(1000)).await;
+                    }
+                }
+            }
+            UdpSubCommand::Receive { address, file } => {
+                let socket = UdpSocket::bind(address).await?;
+                if let Some(file) = file {
+                    let mut file = fs::File::create(file)?;
+                    let mut buffer = vec![0u8; 1024];
+                    loop {
+                        let (size, _) = socket.recv_from(&mut buffer).await?;
+                        file.write_all(&buffer[..size])?;
+                    }
+                } else {
+                    eprintln!("No file specified, printing to stdout.");
+                    let mut buffer = [0u8; 1024];
+                    loop {
+                        let (size, addr) = socket.recv_from(&mut buffer).await?;
+                        println!(
+                            "From {} received: {}",
+                            addr,
+                            String::from_utf8_lossy(&buffer[..size])
+                        );
+                    }
+                }
+            }
+        },
     }
 
     Ok(())
-}
-
-async fn calibrate_send(socket: &UdpSocket) -> Result<()> {
-    let mut rng = SmallRng::from_entropy();
-    let mut buf = [0u8; 20];
-    loop {
-        rng.fill(&mut buf);
-        socket.send(&buf).await?;
-        println!("Sent {} bytes", buf.len());
-        println!("{:?}", &buf);
-        time::sleep(Duration::from_millis(1000)).await;
-    }
-}
-
-async fn calibrate_receive(socket: &UdpSocket, dest: &SocketAddr) -> Result<()> {
-    let mut buf = [0u8; 20];
-    loop {
-        let len = socket.recv(&mut buf).await?;
-        println!("Received {} bytes from {}", len, dest);
-        println!("{:?}", &buf[..len]);
-    }
 }
 
 #[derive(Clone, Deserialize, Debug)]
