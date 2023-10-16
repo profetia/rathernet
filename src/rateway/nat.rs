@@ -166,7 +166,7 @@ async fn receive_daemon(
 
             if dest == config.address {
                 if protocol == Protocol::Icmp {
-                    log::info!("Receive packet {} -> {} ({:?})", src, dest, protocol);
+                    log::debug!("Receive packet {} -> {} ({:?})", src, dest, protocol);
                     let mut icmp = icmp::Packet::new(packet.payload_mut())?;
                     if let Some(mut echo) = icmp.echo_mut().ok().filter(|echo| echo.is_request()) {
                         log::debug!("Reply to ICMP echo request");
@@ -183,15 +183,16 @@ async fn receive_daemon(
                 packet.set_source(config.host)?;
 
                 if protocol == Protocol::Icmp {
-                    log::info!("Receive packet {} -> {} ({:?})", src, dest, protocol);
+                    log::debug!("Receive packet {} -> {} ({:?})", src, dest, protocol);
                     let mut icmp = icmp::Packet::new(packet.payload_mut())?;
                     if let Ok(mut echo) = icmp.echo_mut() {
                         let mut guard = table.lock();
                         let port = guard.forward((src, echo.identifier()));
-                        echo.set_identifier(port)?.checked();
+                        log::debug!("Forward {}:{} to {}:{}", src, echo.identifier(), config.host, port);
+                        echo.set_identifier(port)?.checked();                        
                     }
                 } else if protocol == Protocol::Udp {
-                    log::info!("Receive packet {} -> {} ({:?})", src, dest, protocol);
+                    log::debug!("Receive packet {} -> {} ({:?})", src, dest, protocol);
                 } else {
                     continue;
                 }
@@ -220,19 +221,20 @@ async fn send_daemon(
 
             if dest == config.host {
                 if protocol == Protocol::Icmp {
-                    log::info!("Send packet {} -> {} ({:?})", src, dest, protocol);
+                    log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);
                     let mut icmp = icmp::Packet::new(packet.payload_mut())?;
                     if let Ok(mut echo) = icmp.echo_mut() {
                         let mut guard = table.lock();
-                        if let Some((src, id)) = guard.backward(echo.identifier()) {
-                            echo.set_identifier(id)?.checked();
-                            packet.set_source(src)?;
+                        if let Some((addr, port)) = guard.backward(echo.identifier()) {
+                            log::debug!("Backward {}:{} to {}:{}", config.address, echo.identifier(), src, port);
+                            echo.set_identifier(port)?.checked();
+                            packet.set_destination(addr)?;
                         } else {
                             continue;
                         }
                     }
                 } else if protocol == Protocol::Udp {
-                    log::info!("Send packet {} -> {} ({:?})", src, dest, protocol);
+                    log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);
                 } else {
                     continue;
                 }
