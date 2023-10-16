@@ -12,7 +12,7 @@ use futures::{
 use packet::{
     icmp,
     ip::{self, Protocol},
-    Packet,
+    PacketMut,
 };
 use std::{
     future::Future,
@@ -162,28 +162,32 @@ async fn receive_daemon(
 ) -> Result<()> {
     while let Ok(packet) = rx_socket.read_unchecked().await {
         let bytes = DecodeToBytes::decode(&packet);
-        if let Ok(ip::Packet::V4(packet)) = ip::Packet::new(&bytes) {
+        if let Ok(ip::Packet::V4(mut packet)) = ip::Packet::new(bytes) {
             let src = packet.source();
             let dest = packet.destination();
             let protocol = packet.protocol();
 
-            log::info!("Receive packet {} -> {} ({:?})", src, dest, protocol);
             if dest == config.address {
                 if protocol == Protocol::Icmp {
-                    let icmp = icmp::Packet::new(packet.payload())?;
-                    if let Some(echo) = icmp.echo().ok().filter(|echo| echo.is_request()) {
+                    log::info!("Receive packet {} -> {} ({:?})", src, dest, protocol);
+                    let mut icmp = icmp::Packet::new(packet.payload_mut())?;
+                    if let Some(mut echo) = icmp.echo_mut().ok().filter(|echo| echo.is_request()) {
                         log::debug!("Reply to ICMP echo request");
-                        let mut reply = echo.to_owned();
-                        reply.make_reply()?;
-                        write_packet(&write_tx, reply.as_ref().to_owned()).await?;
-                        continue;
+                        echo.make_reply()?.checked();                     
+                        packet
+                            .set_destination(src)?
+                            .set_source(dest)?
+                            .update_checksum()?;
+
+                        write_packet(&write_tx, packet.as_ref().to_owned()).await?;
                     }
                 } else if protocol == Protocol::Udp {
+                    log::info!("Receive packet {} -> {} ({:?})", src, dest, protocol);
                 } else {
                     continue;
                 }
 
-                let packet = TunPacket::new(bytes);
+                let packet = TunPacket::new(packet.as_ref().to_owned());
                 tx_tun.send(packet).await?;
             }
         }
@@ -198,17 +202,16 @@ async fn send_daemon(
 ) -> Result<()> {
     while let Some(Ok(packet)) = rx_tun.next().await {
         let bytes = packet.get_bytes();
-        // log::debug!("Receive packet: {}", bytes.len());
         if let Ok(ip::Packet::V4(packet)) = ip::Packet::new(bytes) {
             let src = packet.source();
             let dest = packet.destination();
             let protocol = packet.protocol();
-            log::info!("Send packet {} -> {} ({:?})", src, dest, protocol);
 
             if src == config.address {
                 if protocol != Protocol::Icmp && protocol != Protocol::Udp {
                     continue;
                 }
+                log::info!("Send packet {} -> {} ({:?})", src, dest, protocol);
 
                 let (tx, rx) = oneshot::channel();
                 write_tx.send((bytes.to_owned(), tx))?;
