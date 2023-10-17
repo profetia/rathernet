@@ -12,7 +12,7 @@ cargo build --release
 # Set up the route table
 
 # Ping www.baidu.com
-ping "<www.baidu.com>" -S "ipv4" -t
+ping "<www.baidu.com>" -S "<ipv4>" -t
 
 git checkout main
 

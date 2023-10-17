@@ -12,7 +12,7 @@ cargo build --release
 # Set up the route table
 
 # Ping node 3
-ping "ipv4" -S "ipv4" -t
+ping "<ipv4>" -S "<ipv4>" -t
 
 git checkout main
 
