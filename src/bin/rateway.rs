@@ -11,6 +11,7 @@ use rathernet::{
 use rodio::DeviceTrait;
 use serde::{de::Error, Deserialize};
 use std::{
+    collections::HashMap,
     fs,
     io::Write,
     net::{Ipv4Addr, SocketAddrV4},
@@ -209,6 +210,8 @@ struct RatewayNatConfig {
     host: Ipv4Addr,
     #[serde(rename = "socket")]
     socket_config: RatewaySocketConfig,
+    #[serde(rename = "routes")]
+    route_config: Option<HashMap<u16, SocketAddrV4>>,
 }
 
 fn translate_adapter(
@@ -231,6 +234,7 @@ fn translate_nat(config: RatewayNatConfig, ather_config: AtherStreamConfig) -> A
         config.netmask,
         config.host,
         AcsmaSocketConfig::new(config.socket_config.address, ather_config),
+        config.route_config,
     )
 }
 

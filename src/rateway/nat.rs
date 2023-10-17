@@ -21,8 +21,9 @@ use parking_lot::Mutex;
 use pcap::{Active, Capture, Device};
 use socket2::{Domain, Socket, Type};
 use std::{
+    collections::HashMap,
     future::Future,
-    net::Ipv4Addr,
+    net::{Ipv4Addr, SocketAddrV4},
     num::NonZeroUsize,
     ops::Range,
     pin::Pin,
@@ -42,6 +43,7 @@ pub struct AtewayNatConfig {
     pub netmask: Ipv4Addr,
     pub host: Ipv4Addr,
     pub socket_config: AcsmaSocketConfig,
+    pub route_config: Option<HashMap<u16, SocketAddrV4>>,
 }
 
 impl AtewayNatConfig {
@@ -51,6 +53,7 @@ impl AtewayNatConfig {
         netmask: Ipv4Addr,
         host: Ipv4Addr,
         socket_config: AcsmaSocketConfig,
+        route_config: Option<HashMap<u16, SocketAddrV4>>,
     ) -> Self {
         Self {
             name,
@@ -58,6 +61,7 @@ impl AtewayNatConfig {
             netmask,
             host,
             socket_config,
+            route_config,
         }
     }
 }
@@ -116,7 +120,10 @@ fn find_device(ip: Ipv4Addr) -> Result<Device> {
 }
 
 async fn nat_daemon(config: AtewayNatConfig, device: AsioDevice) -> Result<()> {
-    let table = Arc::new(Mutex::new(AtewayNatTable::new(NAT_PORT_RANGE)));
+    let table = Arc::new(Mutex::new(AtewayNatTable::new(
+        NAT_PORT_RANGE,
+        config.route_config.clone(),
+    )));
 
     let (tx_socket, rx_socket) =
         AcsmaIoSocket::try_from_device(config.socket_config.clone(), &device)?;
@@ -296,7 +303,7 @@ type AtewayNatEntry = (Ipv4Addr, u16);
 struct AtewayNatDynTable(LruCache<u16, Option<AtewayNatEntry>>);
 
 impl AtewayNatDynTable {
-    fn new(range: Range<u16>) -> Self {
+    fn new(range: Range<u16>, exclude: &HashMap<u16, AtewayNatEntry>) -> Self {
         let len = range.len();
         let mut table = if len > 0 {
             LruCache::new(NonZeroUsize::new(len).unwrap())
@@ -304,6 +311,9 @@ impl AtewayNatDynTable {
             LruCache::unbounded()
         };
         for port in range {
+            if exclude.contains_key(&port) {
+                continue;
+            }
             table.put(port, None);
         }
         Self(table)
@@ -332,22 +342,51 @@ impl AtewayNatDynTable {
     }
 }
 
+struct AtewayStaticTable(HashMap<u16, AtewayNatEntry>);
+
+impl AtewayStaticTable {
+    fn new() -> Self {
+        Self(HashMap::new())
+    }
+
+    fn forward(&self, entry: AtewayNatEntry) -> Option<u16> {
+        self.0.iter().find(|(_, &v)| v == entry).map(|(&k, _)| k)
+    }
+
+    fn backward(&self, port: u16) -> Option<AtewayNatEntry> {
+        self.0.get(&port).copied()
+    }
+}
+
 struct AtewayNatTable {
     dyn_table: AtewayNatDynTable,
+    static_table: AtewayStaticTable,
 }
 
 impl AtewayNatTable {
-    fn new(range: Range<u16>) -> Self {
+    fn new(range: Range<u16>, routes: Option<HashMap<u16, SocketAddrV4>>) -> Self {
+        let mut static_table = AtewayStaticTable::new();
+        if let Some(map) = routes {
+            for (port, addr) in map {
+                static_table.0.insert(port, (*addr.ip(), addr.port()));
+            }
+        }
+
         Self {
-            dyn_table: AtewayNatDynTable::new(range),
+            dyn_table: AtewayNatDynTable::new(range, &static_table.0),
+            static_table,
         }
     }
 
     fn forward(&mut self, entry: AtewayNatEntry) -> u16 {
-        self.dyn_table.forward(entry)
+        self.static_table
+            .forward(entry)
+            .unwrap_or_else(|| self.dyn_table.forward(entry))
     }
 
     fn backward(&mut self, port: u16) -> Option<AtewayNatEntry> {
-        self.dyn_table.backward(port)
+        self.static_table
+            .backward(port)
+            .or_else(|| self.dyn_table.backward(port))
     }
 }
