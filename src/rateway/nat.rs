@@ -259,17 +259,19 @@ async fn send_daemon(
                     }
                 } else if protocol == Protocol::Udp {
                     log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);
-                    let enclosing = packet.to_owned();
+                    let mut enclosing = packet.to_owned();
                     let mut udp = udp::Packet::new(packet.payload_mut())?;
                     let mut guard = table.lock();
                     if let Some((addr, port)) = guard.backward(udp.destination()) {
                         log::debug!(
                             "Backward {}:{} to {}:{}",
-                            config.address,
+                            config.host,
                             udp.destination(),
-                            src,
+                            addr,
                             port
                         );
+
+                        enclosing.set_destination(addr)?;
                         udp.set_destination(port)?
                             .checked(&ip::Packet::V4(enclosing));
                         packet.set_destination(addr)?;
