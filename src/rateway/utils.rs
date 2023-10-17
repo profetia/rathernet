@@ -51,7 +51,7 @@ pub async fn ping(
 
         tokio::select! {
             _ = time::sleep(timeout) => {
-                println!("Request timed out.");
+                println!("Request timeout.");
             }
             err = ping_daemon(&mut cap, port) => {
                 err?;
@@ -70,7 +70,7 @@ async fn ping_daemon(cap: &mut Capture<Active>, port: u16) -> Result<()> {
         let echo = icmp.echo()?;
         if echo.is_reply() && echo.identifier() == port {
             println!(
-                "Reply from {}: bytes={} time={:?} TTL={}",
+                "Reply from {}: bytes={} time={:?}ms TTL={}",
                 ip.source(),
                 icmp.payload().len(),
                 start.elapsed().as_millis(),
