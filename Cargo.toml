@@ -19,7 +19,7 @@ ipnet = "2.8.0"
 log = "0.4.20"
 lru = "0.12.0"
 num = "0.4.1"
-packet = "0.1.4"
+packet = "0.1.2"
 parking_lot = "0.12.1"
 pcap = "1.1.0"
 rand = { version = "0.8.5", features = ["small_rng"] }
@@ -38,3 +38,4 @@ tun = { version = "0.6.1", features = ["async"] }
 
 [patch.crates-io]
 cpal = { git = "https://github.com/RustAudio/cpal.git", rev = "f51589c" }
+packet = { git = "https://github.com/meh/rust-packet.git", rev = "3e2c4dd" }
