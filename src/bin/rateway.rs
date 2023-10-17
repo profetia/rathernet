@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
             let stream_config = create_stream_config(&device)?;
             let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
 
-            let nat_config = translate_nat(config, ather_config);
+            let nat_config = translate_nat(config, ather_config)?;
             let nat = AtewayIoNat::new(nat_config, device);
             nat.await?;
         }
@@ -211,7 +211,7 @@ struct RatewayNatConfig {
     #[serde(rename = "socket")]
     socket_config: RatewaySocketConfig,
     #[serde(rename = "routes")]
-    route_config: Option<HashMap<u16, SocketAddrV4>>,
+    route_config: Option<HashMap<String, SocketAddrV4>>,
 }
 
 fn translate_adapter(
@@ -227,15 +227,28 @@ fn translate_adapter(
     )
 }
 
-fn translate_nat(config: RatewayNatConfig, ather_config: AtherStreamConfig) -> AtewayNatConfig {
-    AtewayNatConfig::new(
+fn translate_nat(
+    config: RatewayNatConfig,
+    ather_config: AtherStreamConfig,
+) -> Result<AtewayNatConfig> {
+    let route_config = match config.route_config {
+        Some(routes) => {
+            let mut map = HashMap::new();
+            for (name, address) in routes {
+                map.insert(name.parse()?, address);
+            }
+            Some(map)
+        }
+        None => None,
+    };
+    Ok(AtewayNatConfig::new(
         config.name,
         config.address,
         config.netmask,
         config.host,
         AcsmaSocketConfig::new(config.socket_config.address, ather_config),
-        config.route_config,
-    )
+        route_config,
+    ))
 }
 
 fn deserialize_mac<'de, D>(deserializer: D) -> Result<usize, D::Error>
