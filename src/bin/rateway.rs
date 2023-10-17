@@ -4,7 +4,7 @@ use cpal::SupportedStreamConfig;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use rathernet::{
     racsma::AcsmaSocketConfig,
-    rateway::{AtewayAdapterConfig, AtewayIoAdaper, AtewayIoNat, AtewayNatConfig},
+    rateway::{utils, AtewayAdapterConfig, AtewayIoAdaper, AtewayIoNat, AtewayNatConfig},
     rather::AtherStreamConfig,
     raudio::AsioDevice,
 };
@@ -46,6 +46,21 @@ enum SubCommand {
         /// The path to the configuration file.
         #[clap(short, long, default_value = "nat.toml")]
         config: String,
+    },
+    /// Ping a device on the athernet.
+    Ping {
+        /// The peer address that will be pinged.
+        #[arg(required = true)]
+        peer: Ipv4Addr,
+        /// The address that will be used to ping the peer.
+        #[clap(short, long, default_value = "127.0.0.1")]
+        address: Ipv4Addr,
+        /// The elapsed time between each ping in seconds.
+        #[clap(short, long, default_value = "1")]
+        elapsed: u64,
+        /// The port on athernet nat that will be pinged.
+        #[clap(short, long, default_value = "14999")]
+        port: Option<u16>,
     },
 }
 
@@ -178,6 +193,14 @@ async fn main() -> Result<()> {
                 }
             }
         },
+        SubCommand::Ping {
+            peer,
+            address,
+            elapsed,
+            port,
+        } => {
+            utils::ping(address, peer, port, Duration::from_secs(elapsed)).await?;
+        }
     }
 
     Ok(())
