@@ -2,14 +2,20 @@ use super::builtin::NAT_SENDTO_PLACEHOLDER;
 use super::nat::find_device;
 use anyhow::Result;
 use packet::{ether, icmp, ip, Builder, Packet};
-use pcap::{Active, Capture};
+use pcap::{Active, Capture, Error};
 use rand::Rng;
 use socket2::{Domain, Socket, Type};
 use std::{
     net::Ipv4Addr,
     time::{Duration, Instant},
 };
-use tokio::{task, time};
+use tokio::{
+    sync::{
+        mpsc::{self, error::TryRecvError, UnboundedReceiver},
+        oneshot::{self, Sender},
+    },
+    task, time,
+};
 
 pub async fn ping(
     address: Ipv4Addr,
@@ -20,11 +26,17 @@ pub async fn ping(
     let socket = Socket::new(Domain::IPV4, Type::RAW, None)?;
     socket.set_header_included(true)?;
     let device = find_device(address)?;
-    let mut cap = Capture::from_device(device)?.immediate_mode(true).open()?;
+    let mut cap = Capture::from_device(device)?
+        .immediate_mode(true)
+        .open()?
+        .setnonblock()?;
     cap.filter(
         &format!("ip dst host {} && ip src host {} && icmp", address, peer),
         true,
     )?;
+
+    let (task_tx, task_rx) = mpsc::unbounded_channel::<PingTask>();
+    task::spawn_blocking(move || ping_daemon(cap, task_rx));
 
     let mut rng = rand::thread_rng();
     loop {
@@ -47,36 +59,52 @@ pub async fn ping(
             .sequence(0)?
             .payload(&payload)?
             .build()?;
-        socket.send_to(packet.as_ref(), &NAT_SENDTO_PLACEHOLDER.into())?;
 
-        tokio::select! {
-            _ = time::sleep(timeout) => {
-                println!("Request timeout.");
-            }
-            err = ping_daemon(&mut cap, port) => {
-                err?;
-                time::sleep(timeout).await;
-            }
+        let (tx, rx) = oneshot::channel();
+        task_tx.send((tx, port))?;
+        let start = Instant::now();
+        socket.send_to(packet.as_ref(), &NAT_SENDTO_PLACEHOLDER.into())?;
+        if let Ok(Ok(packet)) = time::timeout(timeout, rx).await {
+            let icmp = icmp::Packet::new(packet.payload())?;
+            println!(
+                "Reply from {}: bytes={} time={:?}ms TTL={}",
+                packet.source(),
+                icmp.payload().len(),
+                start.elapsed().as_millis(),
+                packet.ttl()
+            );
+            time::sleep(timeout).await;
+        } else {
+            println!("Request timeout.");
         }
     }
 }
 
-async fn ping_daemon(cap: &mut Capture<Active>, port: u16) -> Result<()> {
-    let start = Instant::now();
-    while let Ok(packet) = task::block_in_place(|| cap.next_packet()) {
-        let ether = ether::Packet::new(packet.data)?;
-        let ip: ip::v4::Packet<&[u8]> = ip::v4::Packet::new(ether.payload())?;
-        let icmp = icmp::Packet::new(ip.payload())?;
-        let echo = icmp.echo()?;
-        if echo.is_reply() && echo.identifier() == port {
-            println!(
-                "Reply from {}: bytes={} time={:?}ms TTL={}",
-                ip.source(),
-                icmp.payload().len(),
-                start.elapsed().as_millis(),
-                ip.ttl()
-            );
-            break;
+type PingTask = (Sender<ip::v4::Packet<Vec<u8>>>, u16);
+
+fn ping_daemon(mut cap: Capture<Active>, mut task_rx: UnboundedReceiver<PingTask>) -> Result<()> {
+    let mut task = None;
+    loop {
+        match task_rx.try_recv() {
+            Ok(inner) => task = Some(inner),
+            Err(TryRecvError::Disconnected) => break,
+            Err(TryRecvError::Empty) => {}
+        }
+        match cap.next_packet() {
+            Ok(packet) => {
+                if let Some((_, port)) = task {
+                    let ether = ether::Packet::new(packet.data)?;
+                    let packet = ip::v4::Packet::new(ether.payload().to_owned())?;
+                    let icmp = icmp::Packet::new(packet.payload())?;
+                    let echo = icmp.echo()?;
+                    if echo.is_reply() && echo.identifier() == port {
+                        let (sender, _) = task.take().unwrap();
+                        let _ = sender.send(packet);
+                    }
+                }
+            }
+            Err(Error::TimeoutExpired) => {}
+            Err(err) => return Err(err.into()),
         }
     }
     Ok(())
