@@ -110,7 +110,7 @@ pub enum AtewayIoError {
     DeviceNotFound(Ipv4Addr),
 }
 
-fn find_device(ip: Ipv4Addr) -> Result<Device> {
+pub(super) fn find_device(ip: Ipv4Addr) -> Result<Device> {
     for device in Device::list()? {
         if device.addresses.iter().any(|addr| addr.addr == ip) {
             return Ok(device);
