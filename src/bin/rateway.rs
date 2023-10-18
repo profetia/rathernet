@@ -307,7 +307,7 @@ async fn main() -> Result<()> {
                                 }
                             }
                         }
-                        time::sleep(Duration::from_millis(10)).await;
+                        time::sleep(Duration::from_millis(400)).await;
                     }
                     stream.shutdown().await?;
                 } else {
