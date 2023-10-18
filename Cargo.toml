@@ -22,6 +22,8 @@ num = "0.4.1"
 packet = "0.1.2"
 parking_lot = "0.12.1"
 pcap = "1.1.0"
+pnet_base = "0.34.0"
+pnet_packet = "0.34.0"
 rand = { version = "0.8.5", features = ["small_rng"] }
 realfft = "3.3.0"
 reed-solomon-erasure = { version = "6.0.0", features = ["simd-accel"] }
