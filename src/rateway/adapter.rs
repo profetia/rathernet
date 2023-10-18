@@ -173,7 +173,7 @@ async fn receive_daemon(
                     let mut icmp = icmp::Packet::new(packet.payload_mut())?;
                     if let Some(mut echo) = icmp.echo_mut().ok().filter(|echo| echo.is_request()) {
                         log::debug!("Reply to ICMP echo request");
-                        echo.make_reply()?.checked();                     
+                        echo.make_reply()?.checked();
                         packet
                             .set_destination(src)?
                             .set_source(dest)?
@@ -183,6 +183,8 @@ async fn receive_daemon(
                         continue;
                     }
                 } else if protocol == Protocol::Udp {
+                    log::debug!("Receive packet {} -> {} ({:?})", src, dest, protocol);
+                } else if protocol == Protocol::Tcp {
                     log::debug!("Receive packet {} -> {} ({:?})", src, dest, protocol);
                 } else {
                     continue;
@@ -209,7 +211,10 @@ async fn send_daemon(
             let protocol = packet.protocol();
 
             if src == config.address {
-                if protocol != Protocol::Icmp && protocol != Protocol::Udp {
+                if protocol != Protocol::Icmp
+                    && protocol != Protocol::Udp
+                    && protocol != Protocol::Tcp
+                {
                     continue;
                 }
                 log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);

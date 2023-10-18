@@ -9,6 +9,7 @@ use super::{
         AckFrame, AcsmaFrame, DataFrame, Frame, FrameFlag, FrameHeader, MacPingReqFrame,
         MacPingRespFrame, NonAckFrame,
     },
+    AcsmaIoError,
 };
 use crate::{
     rather::{signal::Energy, AtherInputStream, AtherOutputStream, AtherStreamConfig},
@@ -24,7 +25,6 @@ use std::{
     mem,
     time::{Duration, Instant},
 };
-use thiserror::Error;
 use tokio::{
     sync::{
         mpsc::{self, error::TryRecvError, UnboundedReceiver, UnboundedSender},
@@ -47,14 +47,6 @@ impl AcsmaSocketConfig {
             ather_config,
         }
     }
-}
-
-#[derive(Debug, Error)]
-pub enum AcsmaIoError {
-    #[error("Link error after {0} retries")]
-    LinkError(usize),
-    #[error("Perf timeout after {0} ms")]
-    PerfTimeout(usize),
 }
 
 pub struct AcsmaSocketReader {
@@ -129,7 +121,7 @@ fn encode_packet(bits: &BitSlice, src: usize, dest: usize) -> impl Iterator<Item
 
     let mut rng = rand::thread_rng();
     let base = rng.gen_range(0..(1 << SEQ_BITS_LEN));
-    
+
     frames.enumerate().map(move |(index, chunk)| {
         let flag = if index == len - 1 {
             FrameFlag::EOP
