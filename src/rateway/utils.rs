@@ -1,10 +1,9 @@
-use super::builtin::NAT_SENDTO_PLACEHOLDER;
 use super::nat::find_device;
+use super::AtewayIoSocket;
 use anyhow::Result;
 use packet::{ether, icmp, ip, Builder, Packet};
 use pcap::{Active, Capture, Error};
 use rand::Rng;
-use socket2::{Domain, Socket, Type};
 use std::{
     net::Ipv4Addr,
     time::{Duration, Instant},
@@ -23,8 +22,8 @@ pub async fn ping(
     port: Option<u16>,
     timeout: Duration,
 ) -> Result<()> {
-    let socket = Socket::new(Domain::IPV4, Type::RAW, None)?;
-    socket.set_header_included(true)?;
+    let mut socket = AtewayIoSocket::try_new(address)?;
+
     let device = find_device(address)?;
     let mut cap = Capture::from_device(device)?
         .immediate_mode(true)
@@ -63,7 +62,7 @@ pub async fn ping(
         let (tx, rx) = oneshot::channel();
         task_tx.send((tx, port))?;
         let start = Instant::now();
-        socket.send_to(packet.as_ref(), &NAT_SENDTO_PLACEHOLDER.into())?;
+        socket.send(packet.as_ref())?;
         if let Ok(Ok(packet)) = time::timeout(timeout, rx).await {
             let icmp = icmp::Packet::new(packet.payload())?;
             println!(
