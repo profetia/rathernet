@@ -1,7 +1,7 @@
 use super::{
     builtin::{PAYLOAD_BITS_LEN, SOCKET_ACK_TIMEOUT, SOCKET_MAX_RESENDS},
     frame::{AckFrame, DataFrame, Frame, FrameFlag},
-    socket::AcsmaIoError,
+    AcsmaIoError,
 };
 use crate::rather::{AtherInputStream, AtherOutputStream};
 use anyhow::Result;
