@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use cpal::SupportedStreamConfig;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use rathernet::{
@@ -13,12 +13,16 @@ use serde::{de::Error, Deserialize};
 use std::{
     collections::HashMap,
     fs,
-    io::Write,
+    io::{ErrorKind, Write},
     net::{Ipv4Addr, SocketAddrV4},
     path::PathBuf,
     time::Duration,
 };
-use tokio::{net::UdpSocket, time};
+use tokio::{
+    io::AsyncWriteExt,
+    net::{TcpListener, TcpSocket, UdpSocket},
+    time,
+};
 
 #[derive(Parser, Debug)]
 #[clap(name = "rateway", version = "0.1.0", author = "Rathernet")]
@@ -62,13 +66,11 @@ enum SubCommand {
         #[clap(short, long, default_value = "14999")]
         port: Option<u16>,
     },
-}
-
-#[derive(ValueEnum, Clone, Copy, Debug)]
-enum CalibrateType {
-    Read,
-    Write,
-    Duplex,
+    /// Transmit a file line by line in TCP.
+    Tcp {
+        #[clap(subcommand)]
+        cmd: TcpSubCommand,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -82,6 +84,7 @@ enum UdpSubCommand {
         #[arg(required = true)]
         peer: SocketAddrV4,
         /// The path to the file to send.
+        /// If no file is specified, random data will be sent.
         #[clap(short, long)]
         source: Option<PathBuf>,
     },
@@ -91,6 +94,33 @@ enum UdpSubCommand {
         #[clap(short, long, default_value = "127.0.0.1:80")]
         address: SocketAddrV4,
         /// The path to the file to store the received data.
+        #[clap(short, long)]
+        file: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum TcpSubCommand {
+    /// Transmit a file line by line in TCP.
+    Send {
+        /// The address that will be used to send the file.
+        #[clap(short, long)]
+        address: Option<SocketAddrV4>,
+        /// The peer address that will receive the file.
+        #[arg(required = true)]
+        peer: SocketAddrV4,
+        /// The path to the file to send.
+        /// If no file is specified, random data will be sent.
+        #[clap(short, long)]
+        source: Option<PathBuf>,
+    },
+    /// Receive a file line by line in TCP.
+    Receive {
+        /// The address that will be used to receive the file.
+        #[clap(short, long, default_value = "127.0.0.1:80")]
+        address: SocketAddrV4,
+        /// The path to the file to store the received data.
+        /// If no file is specified, the data will be printed to stdout.
         #[clap(short, long)]
         file: Option<PathBuf>,
     },
@@ -201,6 +231,110 @@ async fn main() -> Result<()> {
         } => {
             utils::ping(address, peer, port, Duration::from_secs(elapsed)).await?;
         }
+        SubCommand::Tcp { cmd } => match cmd {
+            TcpSubCommand::Receive { address, file } => {
+                let listener = TcpListener::bind(address).await?;
+                println!("Listening on {}", address);
+                let (socket, addr) = listener.accept().await?;
+                println!("Accepted connection from {}", addr);
+                if let Some(file) = file {
+                    let mut file = fs::File::create(file)?;
+                    let mut buffer = vec![0u8; 1024];
+                    loop {
+                        socket.readable().await?;
+                        match socket.try_read(&mut buffer) {
+                            Ok(0) => break,
+                            Ok(size) => {
+                                file.write_all(&buffer[..size])?;
+                            }
+                            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                                continue;
+                            }
+                            Err(e) => {
+                                return Err(e.into());
+                            }
+                        }
+                    }
+                    println!("Connection closed by peer.");
+                } else {
+                    eprintln!("No file specified, printing to stdout.");
+                    let mut buffer = [0u8; 1024];
+                    loop {
+                        socket.readable().await?;
+                        match socket.try_read(&mut buffer) {
+                            Ok(0) => break,
+                            Ok(size) => {
+                                println!(
+                                    "From {} received: {}",
+                                    addr,
+                                    String::from_utf8_lossy(&buffer[..size])
+                                );
+                            }
+                            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                                continue;
+                            }
+                            Err(e) => {
+                                return Err(e.into());
+                            }
+                        }
+                    }
+                }
+            }
+            TcpSubCommand::Send {
+                address,
+                peer,
+                source,
+            } => {
+                let socket = TcpSocket::new_v4()?;
+                if let Some(address) = address {
+                    socket.bind(address.into())?;
+                }
+                println!("Connecting to {}", peer);
+                let mut stream = socket.connect(peer.into()).await?;
+                println!("Established connection to {}", peer);
+                if let Some(source) = source {
+                    let source = fs::read_to_string(source)?;
+                    for line in source.lines() {
+                        loop {
+                            stream.writable().await?;
+                            match stream.try_write(line.as_bytes()) {
+                                Ok(_) => break,
+                                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                                    continue;
+                                }
+                                Err(e) => {
+                                    return Err(e.into());
+                                }
+                            }
+                        }
+                        time::sleep(Duration::from_millis(10)).await;
+                    }
+                    stream.shutdown().await?;
+                } else {
+                    eprintln!("No source file specified, sending random data.");
+                    let mut rng = SmallRng::from_entropy();
+                    let mut buffer = [0u8; 20];
+                    loop {
+                        for byte in buffer.iter_mut() {
+                            *byte = rng.gen_range(0x20..0x7F) as u8;
+                        }
+                        loop {
+                            stream.writable().await?;
+                            match stream.try_write(&buffer) {
+                                Ok(_) => break,
+                                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                                    continue;
+                                }
+                                Err(e) => {
+                                    return Err(e.into());
+                                }
+                            }
+                        }
+                        time::sleep(Duration::from_millis(1000)).await;
+                    }
+                }
+            }
+        },
     }
 
     Ok(())
