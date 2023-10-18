@@ -1,6 +1,7 @@
 use super::{
     adapter::{flatten, write_daemon, AtewayAdapterTask},
     builtin::NAT_PORT_RANGE,
+    AtewayIoError,
 };
 use crate::{
     racsma::{AcsmaIoSocket, AcsmaSocketConfig, AcsmaSocketReader},
@@ -30,7 +31,6 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-use thiserror::Error;
 use tokio::{
     sync::mpsc::{self, UnboundedSender},
     task,
@@ -102,12 +102,6 @@ impl Future for AtewayIoNat {
             Poll::Pending => Poll::Pending,
         }
     }
-}
-
-#[derive(Debug, Error)]
-pub enum AtewayIoError {
-    #[error("Device not found for {0}")]
-    DeviceNotFound(Ipv4Addr),
 }
 
 pub(super) fn find_device(ip: Ipv4Addr) -> Result<Device> {
