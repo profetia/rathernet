@@ -5,6 +5,7 @@ pub use editor::AftpEditor;
 pub use async_ftp::FtpError;
 pub use async_ftp::FtpStream;
 
+use std::io;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -17,4 +18,6 @@ pub enum AftpIoError {
     InvalidArguments,
     #[error("{0}")]
     FtpError(#[from] FtpError),
+    #[error("{0}")]
+    IoError(#[from] io::Error),
 }
