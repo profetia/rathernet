@@ -3,8 +3,8 @@ use async_ftp::FtpStream;
 use rustyline::{
     highlight::Highlighter,
     hint::{Hint, Hinter},
-    history::FileHistory,
-    Completer, Editor, Helper, Validator,
+    history::MemHistory,
+    Completer, Config, Editor, Helper, Validator,
 };
 use std::{borrow::Cow, collections::HashSet, process};
 use tokio::{fs::File, io::AsyncWriteExt};
@@ -16,12 +16,14 @@ pub struct AftpEditor {
     host: String,
     workspace: String,
     stream: FtpStream,
-    editor: Editor<AftpEditorHelper, FileHistory>,
+    editor: Editor<AftpEditorHelper, MemHistory>,
 }
 
 impl AftpEditor {
     pub async fn try_new(user: &str, host: &str, port: u16) -> Result<Self> {
-        let mut editor = Editor::new()?;
+        let config = Config::builder().auto_add_history(true).build();
+        let history = MemHistory::with_config(config);
+        let mut editor = Editor::with_history(config, history)?;
         let mut hints = HashSet::new();
         hints.insert(AftpEditorHint::new("help".into()));
         hints.insert(AftpEditorHint::new("ls".into()));
