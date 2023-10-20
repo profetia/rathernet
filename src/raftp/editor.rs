@@ -29,6 +29,7 @@ impl AftpEditor {
         hints.insert(AftpEditorHint::new("cd".into()));
         hints.insert(AftpEditorHint::new("exit".into()));
         hints.insert(AftpEditorHint::new("get".into()));
+        hints.insert(AftpEditorHint::new("put".into()));
         editor.set_helper(Some(AftpEditorHelper {
             masking: true,
             hints,
@@ -82,6 +83,7 @@ impl AftpEditor {
             "cd" => cd(self, args.collect::<Vec<_>>().as_slice()).await,
             "exit" => exit(self, args.collect::<Vec<_>>().as_slice()).await,
             "get" => get(self, args.collect::<Vec<_>>().as_slice()).await,
+            "put" => put(self, args.collect::<Vec<_>>().as_slice()).await,
             _ => Err(AftpIoError::InvalidCommand(command.into())),
         }
     }
@@ -99,6 +101,7 @@ pwd - print working directory
 cd <path> - change working directory to path
 exit - exit the program
 get <remote> [local] - download remote file to local file
+put <local> [remote] - upload local file to remote file
     "#
     );
     Ok(())
@@ -158,6 +161,17 @@ async fn get(editor: &mut AftpEditor, args: &[&str]) -> Result<(), AftpIoError> 
     let mut file = File::create(local).await?;
     let result = editor.stream.simple_retr(remote).await?;
     file.write_all(&result.into_inner()).await?;
+    Ok(())
+}
+
+async fn put(editor: &mut AftpEditor, args: &[&str]) -> Result<(), AftpIoError> {
+    if !(1..=2).contains(&args.len()) {
+        return Err(AftpIoError::InvalidArguments);
+    }
+    let &local = args.first().unwrap();
+    let &remote = args.get(1).unwrap_or(&local);
+    let mut file = File::open(local).await?;
+    editor.stream.put(remote, &mut file).await?;
     Ok(())
 }
 
