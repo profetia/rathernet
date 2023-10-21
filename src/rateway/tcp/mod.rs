@@ -1,5 +1,7 @@
 mod conn;
 
+use etherparse::{Ipv4HeaderSlice, TcpHeaderSlice};
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::io::prelude::*;
@@ -87,7 +89,7 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
         //
         // and also include on send
 
-        match etherparse::Ipv4HeaderSlice::from_slice(&buf[..nbytes]) {
+        match Ipv4HeaderSlice::from_slice(&buf[..nbytes]) {
             Ok(iph) => {
                 let src = iph.source_addr();
                 let dst = iph.destination_addr();
@@ -97,9 +99,8 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
                     continue;
                 }
 
-                match etherparse::TcpHeaderSlice::from_slice(&buf[iph.slice().len()..nbytes]) {
+                match TcpHeaderSlice::from_slice(&buf[iph.slice().len()..nbytes]) {
                     Ok(tcph) => {
-                        use std::collections::hash_map::Entry;
                         let datai = iph.slice().len() + tcph.slice().len();
                         let mut cmg = ih.manager.lock().unwrap();
                         let cm = &mut *cmg;
@@ -177,7 +178,6 @@ impl Interface {
     }
 
     pub fn bind(&mut self, port: u16) -> io::Result<TcpListener> {
-        use std::collections::hash_map::Entry;
         let mut cm = self.ih.as_mut().unwrap().manager.lock().unwrap();
         match cm.pending.entry(port) {
             Entry::Vacant(v) => {

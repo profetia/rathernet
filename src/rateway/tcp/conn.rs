@@ -1,4 +1,6 @@
+use crate::rateway::builtin::TCP_BUFFER_LEN;
 use bitflags::bitflags;
+use etherparse::{IpNumber, Ipv4Header, Ipv4HeaderSlice, TcpHeader, TcpHeaderSlice};
 use std::collections::{BTreeMap, VecDeque};
 use std::{io, time};
 
@@ -32,8 +34,8 @@ pub struct Connection {
     state: State,
     send: SendSequenceSpace,
     recv: RecvSequenceSpace,
-    ip: etherparse::Ipv4Header,
-    tcp: etherparse::TcpHeader,
+    ip: Ipv4Header,
+    tcp: TcpHeader,
     timers: Timers,
 
     pub(crate) incoming: VecDeque<u8>,
@@ -125,8 +127,8 @@ struct RecvSequenceSpace {
 impl Connection {
     pub fn accept<'a>(
         nic: &mut tun_tap::Iface,
-        iph: etherparse::Ipv4HeaderSlice<'a>,
-        tcph: etherparse::TcpHeaderSlice<'a>,
+        iph: Ipv4HeaderSlice<'a>,
+        tcph: TcpHeaderSlice<'a>,
         data: &'a [u8],
     ) -> io::Result<Option<Self>> {
         let buf = [0u8; 1500];
@@ -136,7 +138,6 @@ impl Connection {
         }
 
         let iss = 0;
-        let wnd = 1024;
         let mut c = Connection {
             timers: Timers {
                 send_times: Default::default(),
@@ -147,7 +148,7 @@ impl Connection {
                 iss,
                 una: iss,
                 nxt: iss,
-                wnd: wnd,
+                wnd: TCP_BUFFER_LEN,
                 up: false,
 
                 wl1: 0,
@@ -159,11 +160,16 @@ impl Connection {
                 wnd: tcph.window_size(),
                 up: false,
             },
-            tcp: etherparse::TcpHeader::new(tcph.destination_port(), tcph.source_port(), iss, wnd),
-            ip: etherparse::Ipv4Header::new(
+            tcp: TcpHeader::new(
+                tcph.destination_port(),
+                tcph.source_port(),
+                iss,
+                TCP_BUFFER_LEN,
+            ),
+            ip: Ipv4Header::new(
                 0,
                 64,
-                etherparse::IpTrafficClass::Tcp,
+                IpNumber::Tcp as _,
                 [
                     iph.destination()[0],
                     iph.destination()[1],
@@ -381,8 +387,8 @@ impl Connection {
     pub(crate) fn on_packet<'a>(
         &mut self,
         nic: &mut tun_tap::Iface,
-        iph: etherparse::Ipv4HeaderSlice<'a>,
-        tcph: etherparse::TcpHeaderSlice<'a>,
+        iph: Ipv4HeaderSlice<'a>,
+        tcph: TcpHeaderSlice<'a>,
         data: &'a [u8],
     ) -> io::Result<Available> {
         // first, check that sequence numbers are valid (RFC 793 S3.3)
@@ -398,30 +404,19 @@ impl Connection {
         let okay = if slen == 0 {
             // zero-length segment has separate rules for acceptance
             if self.recv.wnd == 0 {
-                if seqn != self.recv.nxt {
-                    false
-                } else {
-                    true
-                }
-            } else if !is_between_wrapped(self.recv.nxt.wrapping_sub(1), seqn, wend) {
-                false
+                self.recv.nxt == seqn
             } else {
-                true
+                is_between_wrapped(self.recv.nxt.wrapping_sub(1), seqn, wend)
             }
+        } else if self.recv.wnd == 0 {
+            false
         } else {
-            if self.recv.wnd == 0 {
-                false
-            } else if !is_between_wrapped(self.recv.nxt.wrapping_sub(1), seqn, wend)
-                && !is_between_wrapped(
+            is_between_wrapped(self.recv.nxt.wrapping_sub(1), seqn, wend)
+                || is_between_wrapped(
                     self.recv.nxt.wrapping_sub(1),
                     seqn.wrapping_add(slen - 1),
                     wend,
                 )
-            {
-                false
-            } else {
-                true
-            }
         };
 
         if !okay {
