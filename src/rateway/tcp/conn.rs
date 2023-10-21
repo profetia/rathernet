@@ -1,4 +1,5 @@
 use crate::rateway::builtin::TCP_BUFFER_LEN;
+use anyhow::Result;
 use bitflags::bitflags;
 use etherparse::{IpNumber, Ipv4Header, Ipv4HeaderSlice, TcpHeader, TcpHeaderSlice};
 use std::collections::{BTreeMap, VecDeque};
@@ -130,7 +131,7 @@ impl Connection {
         iph: Ipv4HeaderSlice<'a>,
         tcph: TcpHeaderSlice<'a>,
         data: &'a [u8],
-    ) -> io::Result<Option<Self>> {
+    ) -> Result<Option<Self>> {
         let buf = [0u8; 1500];
         if !tcph.syn() {
             // only expected SYN packet
@@ -198,7 +199,7 @@ impl Connection {
         Ok(Some(c))
     }
 
-    fn write(&mut self, nic: &mut tun_tap::Iface, seq: u32, mut limit: usize) -> io::Result<usize> {
+    fn write(&mut self, nic: &mut tun_tap::Iface, seq: u32, mut limit: usize) -> Result<usize> {
         let mut buf = [0u8; 1500];
         self.tcp.sequence_number = seq;
         self.tcp.acknowledgment_number = self.recv.nxt;
@@ -301,7 +302,7 @@ impl Connection {
         Ok(payload_bytes)
     }
 
-    fn send_rst(&mut self, nic: &mut tun_tap::Iface) -> io::Result<()> {
+    fn send_rst(&mut self, nic: &mut tun_tap::Iface) -> Result<()> {
         self.tcp.rst = true;
         // TODO: fix sequence numbers here
         // If the incoming segment has an ACK field, the reset takes its
@@ -324,7 +325,7 @@ impl Connection {
         Ok(())
     }
 
-    pub(crate) fn on_tick(&mut self, nic: &mut tun_tap::Iface) -> io::Result<()> {
+    pub(crate) fn on_tick(&mut self, nic: &mut tun_tap::Iface) -> Result<()> {
         if let State::FinWait2 | State::TimeWait = self.state {
             // we have shutdown our write side and the other side acked, no need to (re)transmit anything
             return Ok(());
@@ -390,7 +391,7 @@ impl Connection {
         iph: Ipv4HeaderSlice<'a>,
         tcph: TcpHeaderSlice<'a>,
         data: &'a [u8],
-    ) -> io::Result<Available> {
+    ) -> Result<Available> {
         // first, check that sequence numbers are valid (RFC 793 S3.3)
         let seqn = tcph.sequence_number();
         let mut slen = data.len() as u32;
@@ -537,19 +538,14 @@ impl Connection {
         Ok(self.availability())
     }
 
-    pub(crate) fn close(&mut self) -> io::Result<()> {
+    pub(crate) fn close(&mut self) -> Result<()> {
         self.closed = true;
         match self.state {
             State::SynRcvd | State::Estab => {
                 self.state = State::FinWait1;
             }
             State::FinWait1 | State::FinWait2 => {}
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotConnected,
-                    "already closing",
-                ))
-            }
+            _ => return Err(io::Error::new(io::ErrorKind::NotConnected, "already closing").into()),
         };
         Ok(())
     }
