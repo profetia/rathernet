@@ -3,6 +3,7 @@ mod nat;
 mod socket;
 
 pub mod builtin;
+pub mod tcp;
 pub mod utils;
 
 pub use adapter::{AtewayAdapterConfig, AtewayIoAdaper};
