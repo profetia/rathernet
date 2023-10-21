@@ -1,4 +1,5 @@
-use crate::rateway::builtin::TCP_BUFFER_LEN;
+use crate::rather::encode::EncodeFromBytes;
+use crate::{racsma::AcsmaSocketWriter, rateway::builtin::TCP_BUFFER_LEN};
 use anyhow::Result;
 use bitflags::bitflags;
 use etherparse::{IpNumber, Ipv4Header, Ipv4HeaderSlice, TcpHeader, TcpHeaderSlice};
@@ -23,7 +24,7 @@ enum State {
 }
 
 impl State {
-    fn is_synchronized(&self) -> bool {
+    fn _is_synchronized(&self) -> bool {
         match *self {
             State::SynRcvd => false,
             State::Estab | State::FinWait1 | State::FinWait2 | State::TimeWait => true,
@@ -91,13 +92,13 @@ struct SendSequenceSpace {
     /// send next
     nxt: u32,
     /// send window
-    wnd: u16,
+    _wnd: u16,
     /// send urgent pointer
-    up: bool,
+    _up: bool,
     /// segment sequence number used for last window update
-    wl1: usize,
+    _wl1: usize,
     /// segment acknowledgment number used for last window update
-    wl2: usize,
+    _wl2: usize,
     /// initial send sequence number
     iss: u32,
 }
@@ -120,19 +121,18 @@ struct RecvSequenceSpace {
     /// receive window
     wnd: u16,
     /// receive urgent pointer
-    up: bool,
+    _up: bool,
     /// initial receive sequence number
     irs: u32,
 }
 
 impl Connection {
-    pub fn accept<'a>(
-        nic: &mut tun_tap::Iface,
+    pub async fn accept<'a>(
+        nic: &mut AcsmaSocketWriter,
         iph: Ipv4HeaderSlice<'a>,
         tcph: TcpHeaderSlice<'a>,
-        data: &'a [u8],
+        _data: &'a [u8],
     ) -> Result<Option<Self>> {
-        let buf = [0u8; 1500];
         if !tcph.syn() {
             // only expected SYN packet
             return Ok(None);
@@ -142,24 +142,24 @@ impl Connection {
         let mut c = Connection {
             timers: Timers {
                 send_times: Default::default(),
-                srtt: time::Duration::from_secs(1 * 60).as_secs_f64(),
+                srtt: time::Duration::from_secs(60).as_secs_f64(),
             },
             state: State::SynRcvd,
             send: SendSequenceSpace {
                 iss,
                 una: iss,
                 nxt: iss,
-                wnd: TCP_BUFFER_LEN,
-                up: false,
+                _wnd: TCP_BUFFER_LEN,
+                _up: false,
 
-                wl1: 0,
-                wl2: 0,
+                _wl1: 0,
+                _wl2: 0,
             },
             recv: RecvSequenceSpace {
                 irs: tcph.sequence_number(),
                 nxt: tcph.sequence_number() + 1,
                 wnd: tcph.window_size(),
-                up: false,
+                _up: false,
             },
             tcp: TcpHeader::new(
                 tcph.destination_port(),
@@ -195,11 +195,16 @@ impl Connection {
         // need to start establishing a connection
         c.tcp.syn = true;
         c.tcp.ack = true;
-        c.write(nic, c.send.nxt, 0)?;
+        c.write(nic, c.send.nxt, 0).await?;
         Ok(Some(c))
     }
 
-    fn write(&mut self, nic: &mut tun_tap::Iface, seq: u32, mut limit: usize) -> Result<usize> {
+    async fn write(
+        &mut self,
+        nic: &mut AcsmaSocketWriter,
+        seq: u32,
+        mut limit: usize,
+    ) -> Result<usize> {
         let mut buf = [0u8; 1500];
         self.tcp.sequence_number = seq;
         self.tcp.acknowledgment_number = self.recv.nxt;
@@ -241,17 +246,16 @@ impl Connection {
         let max_data = std::cmp::min(limit, h.len() + t.len());
         let size = std::cmp::min(
             buf.len(),
-            self.tcp.header_len() as usize + self.ip.header_len() as usize + max_data,
+            self.tcp.header_len() as usize + self.ip.header_len() + max_data,
         );
-        self.ip
-            .set_payload_len(size - self.ip.header_len() as usize);
+        self.ip.set_payload_len(size - self.ip.header_len())?;
 
         // write out the headers and the payload
         use std::io::Write;
         let buf_len = buf.len();
         let mut unwritten = &mut buf[..];
 
-        self.ip.write(&mut unwritten);
+        self.ip.write(&mut unwritten)?;
         let ip_header_ends_at = buf_len - unwritten.len();
 
         // postpone writing the tcp header because we need the payload as one contiguous slice to calculate the tcp checksum
@@ -282,7 +286,7 @@ impl Connection {
             .expect("failed to compute checksum");
 
         let mut tcp_header_buf = &mut buf[ip_header_ends_at..tcp_header_ends_at];
-        self.tcp.write(&mut tcp_header_buf);
+        self.tcp.write(&mut tcp_header_buf)?;
 
         let mut next_seq = seq.wrapping_add(payload_bytes as u32);
         if self.tcp.syn {
@@ -298,11 +302,13 @@ impl Connection {
         }
         self.timers.send_times.insert(seq, time::Instant::now());
 
-        nic.send(&buf[..payload_ends_at])?;
+        nic.write_unchecked(&buf[..payload_ends_at].encode())
+            .await?;
+        // nic.send(&buf[..payload_ends_at])?;
         Ok(payload_bytes)
     }
 
-    fn send_rst(&mut self, nic: &mut tun_tap::Iface) -> Result<()> {
+    async fn _send_rst(&mut self, nic: &mut AcsmaSocketWriter) -> Result<()> {
         self.tcp.rst = true;
         // TODO: fix sequence numbers here
         // If the incoming segment has an ACK field, the reset takes its
@@ -321,11 +327,11 @@ impl Connection {
         // to be received, and the connection remains in the same state.
         self.tcp.sequence_number = 0;
         self.tcp.acknowledgment_number = 0;
-        self.write(nic, self.send.nxt, 0)?;
+        self.write(nic, self.send.nxt, 0).await?;
         Ok(())
     }
 
-    pub(crate) fn on_tick(&mut self, nic: &mut tun_tap::Iface) -> Result<()> {
+    pub(crate) async fn _on_tick(&mut self, nic: &mut AcsmaSocketWriter) -> Result<()> {
         if let State::FinWait2 | State::TimeWait = self.state {
             // we have shutdown our write side and the other side acked, no need to (re)transmit anything
             return Ok(());
@@ -355,20 +361,20 @@ impl Connection {
         };
 
         if should_retransmit {
-            let resend = std::cmp::min(self.unacked.len() as u32, self.send.wnd as u32);
-            if resend < self.send.wnd as u32 && self.closed {
+            let resend = std::cmp::min(self.unacked.len() as u32, self.send._wnd as u32);
+            if resend < self.send._wnd as u32 && self.closed {
                 // can we include the FIN?
                 self.tcp.fin = true;
                 self.closed_at = Some(self.send.una.wrapping_add(self.unacked.len() as u32));
             }
-            self.write(nic, self.send.una, resend as usize)?;
+            self.write(nic, self.send.una, resend as usize).await?;
         } else {
             // we should send new data if we have new data and space in the window
             if nunsent_data == 0 && self.closed_at.is_some() {
                 return Ok(());
             }
 
-            let allowed = self.send.wnd as u32 - nunacked_data;
+            let allowed = self.send._wnd as u32 - nunacked_data;
             if allowed == 0 {
                 return Ok(());
             }
@@ -379,16 +385,16 @@ impl Connection {
                 self.closed_at = Some(self.send.una.wrapping_add(self.unacked.len() as u32));
             }
 
-            self.write(nic, self.send.nxt, send as usize)?;
+            self.write(nic, self.send.nxt, send as usize).await?;
         }
 
         Ok(())
     }
 
-    pub(crate) fn on_packet<'a>(
+    pub(crate) async fn on_packet<'a>(
         &mut self,
-        nic: &mut tun_tap::Iface,
-        iph: Ipv4HeaderSlice<'a>,
+        nic: &mut AcsmaSocketWriter,
+        _iph: Ipv4HeaderSlice<'a>,
         tcph: TcpHeaderSlice<'a>,
         data: &'a [u8],
     ) -> Result<Available> {
@@ -422,7 +428,7 @@ impl Connection {
 
         if !okay {
             eprintln!("NOT OKAY");
-            self.write(nic, self.send.nxt, 0)?;
+            self.write(nic, self.send.nxt, 0).await?;
             return Ok(self.availability());
         }
 
@@ -467,10 +473,10 @@ impl Connection {
                         std::cmp::min(ackn.wrapping_sub(data_start) as usize, self.unacked.len());
                     self.unacked.drain(..acked_data_end);
 
-                    let old = std::mem::replace(&mut self.timers.send_times, BTreeMap::new());
+                    let old = std::mem::take(&mut self.timers.send_times);
 
                     let una = self.send.una;
-                    let mut srtt = &mut self.timers.srtt;
+                    let srtt = &mut self.timers.srtt;
                     self.timers
                         .send_times
                         .extend(old.into_iter().filter_map(|(seq, sent)| {
@@ -519,7 +525,7 @@ impl Connection {
 
                 // Send an acknowledgment of the form: <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
                 // TODO: maybe just tick to piggyback ack on data?
-                self.write(nic, self.send.nxt, 0)?;
+                self.write(nic, self.send.nxt, 0).await?;
             }
         }
 
@@ -528,7 +534,7 @@ impl Connection {
                 State::FinWait2 => {
                     // we're done with the connection!
                     self.recv.nxt = self.recv.nxt.wrapping_add(1);
-                    self.write(nic, self.send.nxt, 0)?;
+                    self.write(nic, self.send.nxt, 0).await?;
                     self.state = State::TimeWait;
                 }
                 _ => unimplemented!(),
