@@ -1,16 +1,27 @@
+//! TCP implementation for RateWay.
+//! Based on https://www.youtube.com/watch?v=_OnJ9z-e_TY&t=0s.
+
 mod conn;
 
+use crate::{
+    racsma::{AcsmaIoSocket, AcsmaSocketConfig, AcsmaSocketReader, AcsmaSocketWriter},
+    rateway::builtin::TCP_BUFFER_LEN,
+    rather::encode::DecodeToBytes,
+    raudio::AsioDevice,
+};
 use anyhow::Result;
 use etherparse::{Ipv4HeaderSlice, TcpHeaderSlice};
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, VecDeque};
-use std::io;
-use std::io::prelude::*;
-use std::net::Ipv4Addr;
-use std::sync::{Arc, Condvar, Mutex};
-use std::thread;
-
-const SENDQUEUE_SIZE: usize = 1024;
+use std::{
+    collections::{hash_map::Entry, HashMap, VecDeque},
+    io::{self, Read, Write},
+    net::Ipv4Addr,
+    sync::Arc,
+};
+use tokio::{
+    runtime::Handle,
+    sync::{Mutex, Notify},
+    task::{self, JoinHandle},
+};
 
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 struct Quad {
@@ -19,30 +30,27 @@ struct Quad {
 }
 
 #[derive(Default)]
-struct Foobar {
+struct InterfaceHandleInner {
     manager: Mutex<ConnectionManager>,
-    pending_var: Condvar,
-    rcv_var: Condvar,
+    pending_var: Notify,
+    rcv_var: Notify,
 }
 
-type InterfaceHandle = Arc<Foobar>;
+type InterfaceHandle = Arc<InterfaceHandleInner>;
 
 pub struct Interface {
     ih: Option<InterfaceHandle>,
-    jh: Option<thread::JoinHandle<Result<()>>>,
+    jh: Option<JoinHandle<Result<()>>>,
 }
 
 impl Drop for Interface {
     fn drop(&mut self) {
-        self.ih.as_mut().unwrap().manager.lock().unwrap().terminate = true;
+        self.ih.as_mut().unwrap().manager.blocking_lock().terminate = true;
 
         drop(self.ih.take());
-        self.jh
-            .take()
-            .expect("interface dropped more than once")
-            .join()
-            .unwrap()
-            .unwrap();
+        if let Some(inner) = self.jh.take() {
+            let _ = task::block_in_place(move || Handle::current().block_on(inner));
+        }
     }
 }
 
@@ -53,29 +61,16 @@ struct ConnectionManager {
     pending: HashMap<u16, VecDeque<Quad>>,
 }
 
-fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> Result<()> {
-    let mut buf = [0u8; 1504];
-
+async fn packet_loop(
+    mut write_socket: AcsmaSocketWriter,
+    mut read_socket: AcsmaSocketReader,
+    ih: InterfaceHandle,
+) -> Result<()> {
     loop {
         // we want to read from nic, but we want to make sure that we'll wake up when the next
         // timer has to be triggered!
-        use std::os::unix::io::AsRawFd;
-        let mut pfd = [nix::poll::PollFd::new(
-            nic.as_raw_fd(),
-            nix::poll::EventFlags::POLLIN,
-        )];
-        let n = nix::poll::poll(&mut pfd[..], 10).map_err(|e| e.as_errno().unwrap())?;
-        assert_ne!(n, -1);
-        if n == 0 {
-            let mut cmg = ih.manager.lock().unwrap();
-            for connection in cmg.connections.values_mut() {
-                // XXX: don't die on errors?
-                connection.on_tick(&mut nic)?;
-            }
-            continue;
-        }
-        assert_eq!(n, 1);
-        let nbytes = nic.recv(&mut buf[..])?;
+        let buf = read_socket.read_unchecked().await?.decode();
+        let nbytes = buf.len();
 
         // TODO: if self.terminate && Arc::get_strong_refs(ih) == 1; then tear down all connections and return.
 
@@ -103,7 +98,7 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> Result<()> {
                 match TcpHeaderSlice::from_slice(&buf[iph.slice().len()..nbytes]) {
                     Ok(tcph) => {
                         let datai = iph.slice().len() + tcph.slice().len();
-                        let mut cmg = ih.manager.lock().unwrap();
+                        let mut cmg = ih.manager.lock().await;
                         let cm = &mut *cmg;
                         let q = Quad {
                             src: (src, tcph.source_port()),
@@ -113,17 +108,15 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> Result<()> {
                         match cm.connections.entry(q) {
                             Entry::Occupied(mut c) => {
                                 eprintln!("got packet for known quad {:?}", q);
-                                let a = c.get_mut().on_packet(
-                                    &mut nic,
-                                    iph,
-                                    tcph,
-                                    &buf[datai..nbytes],
-                                )?;
+                                let a = c
+                                    .get_mut()
+                                    .on_packet(&mut write_socket, iph, tcph, &buf[datai..nbytes])
+                                    .await?;
 
                                 // TODO: compare before/after
                                 drop(cmg);
                                 if a.contains(conn::Available::READ) {
-                                    ih.rcv_var.notify_all()
+                                    ih.rcv_var.notify_waiters()
                                 }
                                 if a.contains(conn::Available::WRITE) {
                                     // TODO: ih.snd_var.notify_all()
@@ -135,15 +128,17 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> Result<()> {
                                 {
                                     eprintln!("listening, so accepting");
                                     if let Some(c) = conn::Connection::accept(
-                                        &mut nic,
+                                        &mut write_socket,
                                         iph,
                                         tcph,
                                         &buf[datai..nbytes],
-                                    )? {
+                                    )
+                                    .await?
+                                    {
                                         e.insert(c);
                                         pending.push_back(q);
                                         drop(cmg);
-                                        ih.pending_var.notify_all()
+                                        ih.pending_var.notify_waiters()
                                     }
                                 }
                             }
@@ -154,7 +149,7 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> Result<()> {
                     }
                 }
             }
-            Err(e) => {
+            Err(_e) => {
                 // eprintln!("ignoring weird packet {:?}", e);
             }
         }
@@ -162,14 +157,13 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> Result<()> {
 }
 
 impl Interface {
-    pub fn new() -> Result<Self> {
-        let nic = tun_tap::Iface::without_packet_info("tun0", tun_tap::Mode::Tun)?;
+    pub fn new(config: AcsmaSocketConfig, device: &AsioDevice) -> Result<Self> {
+        let (write_socket, read_socket) = AcsmaIoSocket::try_from_device(config, device)?;
 
         let ih: InterfaceHandle = Arc::default();
-
         let jh = {
             let ih = ih.clone();
-            thread::spawn(move || packet_loop(nic, ih))
+            tokio::spawn(packet_loop(write_socket, read_socket, ih))
         };
 
         Ok(Interface {
@@ -178,8 +172,8 @@ impl Interface {
         })
     }
 
-    pub fn bind(&mut self, port: u16) -> Result<TcpListener> {
-        let mut cm = self.ih.as_mut().unwrap().manager.lock().unwrap();
+    pub async fn bind(&mut self, port: u16) -> Result<TcpListener> {
+        let mut cm = self.ih.as_mut().unwrap().manager.lock().await;
         match cm.pending.entry(port) {
             Entry::Vacant(v) => {
                 v.insert(VecDeque::new());
@@ -203,14 +197,14 @@ pub struct TcpListener {
 
 impl Drop for TcpListener {
     fn drop(&mut self) {
-        let mut cm = self.h.manager.lock().unwrap();
+        let mut cm = self.h.manager.blocking_lock();
 
         let pending = cm
             .pending
             .remove(&self.port)
             .expect("port closed while listener still active");
 
-        for quad in pending {
+        for _quad in pending {
             // TODO: terminate cm.connections[quad]
             unimplemented!();
         }
@@ -218,10 +212,13 @@ impl Drop for TcpListener {
 }
 
 impl TcpListener {
-    pub fn accept(&mut self) -> Result<TcpStream> {
-        let mut cm = self.h.manager.lock().unwrap();
+    pub async fn accept(&mut self) -> Result<TcpStream> {
         loop {
-            if let Some(quad) = cm
+            if let Some(quad) = self
+                .h
+                .manager
+                .lock()
+                .await
                 .pending
                 .get_mut(&self.port)
                 .expect("port closed while listener still active")
@@ -233,7 +230,7 @@ impl TcpListener {
                 });
             }
 
-            cm = self.h.pending_var.wait(cm).unwrap();
+            self.h.pending_var.notified().await;
         }
     }
 }
@@ -245,7 +242,7 @@ pub struct TcpStream {
 
 impl Drop for TcpStream {
     fn drop(&mut self) {
-        let cm = self.h.manager.lock().unwrap();
+        let _cm = self.h.manager.blocking_lock();
         // TODO: send FIN on cm.connections[quad]
         // TODO: _eventually_ remove self.quad from cm.connections
     }
@@ -253,8 +250,8 @@ impl Drop for TcpStream {
 
 impl Read for TcpStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut cm = self.h.manager.lock().unwrap();
         loop {
+            let mut cm = self.h.manager.blocking_lock();
             let c = cm.connections.get_mut(&self.quad).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::ConnectionAborted,
@@ -270,24 +267,25 @@ impl Read for TcpStream {
             if !c.incoming.is_empty() {
                 let mut nread = 0;
                 let (head, tail) = c.incoming.as_slices();
-                let hread = std::cmp::min(buf.len(), head.len());
+                let hread = buf.len().min(head.len());
                 buf[..hread].copy_from_slice(&head[..hread]);
                 nread += hread;
-                let tread = std::cmp::min(buf.len() - nread, tail.len());
+                let tread = (buf.len() - nread).min(tail.len());
                 buf[hread..(hread + tread)].copy_from_slice(&tail[..tread]);
                 nread += tread;
                 drop(c.incoming.drain(..nread));
                 return Ok(nread);
             }
+            drop(cm);
 
-            cm = self.h.rcv_var.wait(cm).unwrap();
+            self.h.rcv_var.notified();
         }
     }
 }
 
 impl Write for TcpStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut cm = self.h.manager.lock().unwrap();
+        let mut cm = self.h.manager.blocking_lock();
         let c = cm.connections.get_mut(&self.quad).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::ConnectionAborted,
@@ -295,7 +293,7 @@ impl Write for TcpStream {
             )
         })?;
 
-        if c.unacked.len() >= SENDQUEUE_SIZE {
+        if c.unacked.len() >= TCP_BUFFER_LEN as usize {
             // TODO: block
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -303,14 +301,14 @@ impl Write for TcpStream {
             ));
         }
 
-        let nwrite = std::cmp::min(buf.len(), SENDQUEUE_SIZE - c.unacked.len());
+        let nwrite = std::cmp::min(buf.len(), TCP_BUFFER_LEN as usize - c.unacked.len());
         c.unacked.extend(buf[..nwrite].iter());
 
         Ok(nwrite)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        let mut cm = self.h.manager.lock().unwrap();
+        let mut cm = self.h.manager.blocking_lock();
         let c = cm.connections.get_mut(&self.quad).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::ConnectionAborted,
@@ -331,8 +329,8 @@ impl Write for TcpStream {
 }
 
 impl TcpStream {
-    pub fn shutdown(&self, how: std::net::Shutdown) -> Result<()> {
-        let mut cm = self.h.manager.lock().unwrap();
+    pub async fn shutdown(&self, _how: std::net::Shutdown) -> Result<()> {
+        let mut cm = self.h.manager.lock().await;
         let c = cm.connections.get_mut(&self.quad).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::ConnectionAborted,
