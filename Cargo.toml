@@ -14,6 +14,7 @@ clap = { version = "4.4.3", features = ["derive"] }
 cpal = { version = "0.15.2", features = ["asio"] }
 crc = "3.0.1"
 env_logger = "0.10.0"
+etherparse = "0.13.0"
 futures = "0.3.28"
 hound = "3.5.0"
 ipconfig = "0.3.2"
