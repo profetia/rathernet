@@ -1,5 +1,6 @@
 mod conn;
 
+use anyhow::Result;
 use etherparse::{Ipv4HeaderSlice, TcpHeaderSlice};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
@@ -28,7 +29,7 @@ type InterfaceHandle = Arc<Foobar>;
 
 pub struct Interface {
     ih: Option<InterfaceHandle>,
-    jh: Option<thread::JoinHandle<io::Result<()>>>,
+    jh: Option<thread::JoinHandle<Result<()>>>,
 }
 
 impl Drop for Interface {
@@ -52,7 +53,7 @@ struct ConnectionManager {
     pending: HashMap<u16, VecDeque<Quad>>,
 }
 
-fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
+fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> Result<()> {
     let mut buf = [0u8; 1504];
 
     loop {
@@ -161,7 +162,7 @@ fn packet_loop(mut nic: tun_tap::Iface, ih: InterfaceHandle) -> io::Result<()> {
 }
 
 impl Interface {
-    pub fn new() -> io::Result<Self> {
+    pub fn new() -> Result<Self> {
         let nic = tun_tap::Iface::without_packet_info("tun0", tun_tap::Mode::Tun)?;
 
         let ih: InterfaceHandle = Arc::default();
@@ -177,17 +178,14 @@ impl Interface {
         })
     }
 
-    pub fn bind(&mut self, port: u16) -> io::Result<TcpListener> {
+    pub fn bind(&mut self, port: u16) -> Result<TcpListener> {
         let mut cm = self.ih.as_mut().unwrap().manager.lock().unwrap();
         match cm.pending.entry(port) {
             Entry::Vacant(v) => {
                 v.insert(VecDeque::new());
             }
             Entry::Occupied(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::AddrInUse,
-                    "port already bound",
-                ));
+                return Err(io::Error::new(io::ErrorKind::AddrInUse, "port already bound").into());
             }
         };
         drop(cm);
@@ -220,7 +218,7 @@ impl Drop for TcpListener {
 }
 
 impl TcpListener {
-    pub fn accept(&mut self) -> io::Result<TcpStream> {
+    pub fn accept(&mut self) -> Result<TcpStream> {
         let mut cm = self.h.manager.lock().unwrap();
         loop {
             if let Some(quad) = cm
@@ -333,7 +331,7 @@ impl Write for TcpStream {
 }
 
 impl TcpStream {
-    pub fn shutdown(&self, how: std::net::Shutdown) -> io::Result<()> {
+    pub fn shutdown(&self, how: std::net::Shutdown) -> Result<()> {
         let mut cm = self.h.manager.lock().unwrap();
         let c = cm.connections.get_mut(&self.quad).ok_or_else(|| {
             io::Error::new(
