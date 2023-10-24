@@ -83,11 +83,6 @@ const BODY_BITS_LEN: usize = LENGTH_BITS_LEN + PAYLOAD_BITS_LEN;
 #[allow(dead_code)]
 const PACKET_BITS_LEN: usize = HEADER_BITS_LEN + BODY_BITS_LEN;
 
-pub const SWEEP_STARTBAND: f32 = 3000.;
-pub const SWEEP_PEAKBAND: f32 = 3500.;
-pub const SWEEP_ENDBAND: f32 = 4000.;
-pub const SWEEP_GAP: f32 = 1000.;
-
 #[derive(Debug, Clone)]
 pub struct AtherStreamConfig {
     pub frequency: u32,
