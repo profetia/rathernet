@@ -1,7 +1,5 @@
 use realfft::{num_complex::Complex, RealFftPlanner};
 use std::f32::consts::PI;
-extern crate fixed;
-use fixed::types::I32F32;
 
 pub fn rfft(source: &[f32], len: usize) -> Box<[Complex<f32>]> {
     let mut real_planner = RealFftPlanner::<f32>::new();
@@ -60,50 +58,6 @@ pub fn correlate(volume: &[f32], kernel: &[f32]) -> Box<[f32]> {
         .collect()
 }
 
-pub fn correlate_naive(volume: &[f32], kernel: &[f32]) -> Box<[f32]> {
-    let n = volume.len();
-    let m = kernel.len();
-    let full = n + m - 1;
-
-    // Initialize the result vector with zeros
-    let mut result = vec![0f32; full];
-
-    // Loop through each position in the volume
-    for i in 0..n {
-        // Loop through each position in the kernel
-        for j in 0..m {
-            result[i + j] += volume[i] * kernel[m - 1 - j];
-        }
-    }
-    result.into_boxed_slice()
-}
-
-pub fn correlate_naive_fixpoint(volume: &[f32], kernel: &[f32]) -> Box<[f32]> {
-    let n = volume.len();
-    let m = kernel.len();
-    let full = n + m - 1;
-
-    // Convert the input slices to fixed-point
-    let volume_fixed: Vec<I32F32> = volume.iter().map(|&v| I32F32::from_num(v)).collect();
-    let kernel_fixed: Vec<I32F32> = kernel.iter().map(|&k| I32F32::from_num(k)).collect();
-
-    // Initialize the result vector with zeros
-    let mut result = vec![I32F32::from_bits(0); full];
-
-    // Loop through each position in the volume
-    for i in 0..n {
-        // Loop through each position in the kernel
-        for j in 0..m {
-            result[i + j] = result[i + j] + (volume_fixed[i] * kernel_fixed[m - 1 - j]);
-        }
-    }
-
-    // Convert the fixed-point result back to f32
-    let result_f32: Vec<f32> = result.iter().map(|&res| res.to_num::<f32>()).collect();
-
-    result_f32.into_boxed_slice()
-}
-
 pub trait ArgMax
 where
     Self: AsRef<[f32]>,
@@ -160,7 +114,7 @@ impl Normalize for Vec<f32> {
 }
 
 pub fn synchronize(volume: &[f32], kernel: &[f32]) -> (isize, f32) {
-    let corr = correlate_naive_fixpoint(volume, kernel);
+    let corr = correlate(volume, kernel);
     let (index, max) = corr.argmax();
     (kernel.len() as isize - 1 - index as isize, max)
 }
