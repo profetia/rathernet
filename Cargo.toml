@@ -16,6 +16,7 @@ crc = "3.0.1"
 env_logger = "0.10.0"
 etherparse = "0.13.0"
 futures = "0.3.28"
+fixed = { version = "1.24.0", features = ["std"] }
 hound = "3.5.0"
 ipconfig = "0.3.2"
 ipnet = "2.8.0"
