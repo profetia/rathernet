@@ -1,3 +1,4 @@
+use super::stream::{SWEEP_ENDBAND, SWEEP_GAP, SWEEP_PEAKBAND, SWEEP_STARTBAND};
 use crate::raudio::AudioSamples;
 use std::f32::consts::PI;
 
@@ -54,16 +55,48 @@ impl From<Preamble> for AudioSamples<f32> {
 pub struct Symbol(pub AudioSamples<f32>);
 
 impl Symbol {
-    pub fn new(frequency: u32, sample_rate: u32, duration: f32) -> (Self, Self) {
-        let zero = (0..(duration * sample_rate as f32) as usize)
+    pub fn new(_frequency: u32, sample_rate: u32, duration: f32) -> (Self, Self) {
+        let len = (duration as f32 * sample_rate as f32) as i32;
+        let zero_sweep = (0..len)
             .map(|item| {
-                let t = item as f32 * 2.0 * PI / sample_rate as f32;
-                (t * frequency as f32).sin()
+                if item < len {
+                    //from SWEEP_STARTBAND to SWEEP_PEAKBAND
+                    SWEEP_STARTBAND
+                        + item as f32 * (SWEEP_PEAKBAND - SWEEP_STARTBAND) / (len) as f32
+                } else {
+                    //from SWEEP_PEAKBAND to SWEEP_ENDBAND
+                    SWEEP_PEAKBAND
+                        - (item - len / 2) as f32 * (SWEEP_PEAKBAND - SWEEP_ENDBAND)
+                            / (len / 2) as f32
+                }
             })
+            .scan(0.0f32, |acc, item| {
+                *acc += item / sample_rate as f32;
+                Some(*acc)
+            })
+            .map(|item| (item * 2.0 * PI).sin())
             .collect::<AudioSamples<f32>>();
-        let one = zero.iter().map(|item| -item).collect::<AudioSamples<f32>>();
-
-        (Self(zero), Self(one))
+        let one_sweep = (0..len)
+            .map(|item| {
+                if item < len {
+                    //from SWEEP_STARTBAND + SWEEP_GAP to SWEEP_PEAKBAND + SWEEP_GAP
+                    SWEEP_STARTBAND
+                        + SWEEP_GAP
+                        + item as f32 * (SWEEP_PEAKBAND - SWEEP_STARTBAND) / (len) as f32
+                } else {
+                    //from SWEEP_PEAKBAND + SWEEP_GAP to SWEEP_ENDBAND + SWEEP_GAP
+                    SWEEP_PEAKBAND + SWEEP_GAP
+                        - (item - len / 2) as f32 * (SWEEP_PEAKBAND - SWEEP_ENDBAND)
+                            / (len / 2) as f32
+                }
+            })
+            .scan(0.0f32, |acc, item| {
+                *acc += item / sample_rate as f32;
+                Some(*acc)
+            })
+            .map(|item| (item * 2.0 * PI).sin())
+            .collect::<AudioSamples<f32>>();
+        (Self(zero_sweep), Self(one_sweep))
     }
 }
 
