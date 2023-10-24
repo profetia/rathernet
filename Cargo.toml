@@ -12,6 +12,7 @@ clap = { version = "4.4.3", features = ["derive"] }
 cpal = { version = "0.15.2", features = ["asio"] }
 crc = "3.0.1"
 crossbeam = "0.8.2"
+fixed = { version = "1.24.0", features = ["std"] }
 hound = "3.5.0"
 num = "0.4.1"
 realfft = "3.3.0"
