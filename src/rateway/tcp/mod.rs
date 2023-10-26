@@ -1,5 +1,5 @@
 //! TCP implementation for RateWay.
-//! Based on https://www.youtube.com/watch?v=_OnJ9z-e_TY&t=0s.
+//! Based on <https://www.youtube.com/watch?v=_OnJ9z-e_TY&t=0s>.
 
 mod conn;
 

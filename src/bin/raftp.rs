@@ -6,7 +6,7 @@ use rathernet::raftp::{AftpEditor, AftpIoError};
 #[clap(name = "raftp", version = "0.1.0")]
 #[clap(about = "A command line interface for rathernet raftp.")]
 struct RaftpCli {
-    /// The address of the FTP server to connect to, in the form of <user>@<host>[:port].
+    /// The address of the FTP server to connect to, in the form of \<user\>@\<host\>\[:port\].
     #[arg(required = true)]
     url: String,
 }
