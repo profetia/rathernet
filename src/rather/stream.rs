@@ -23,7 +23,7 @@ extern crate reed_solomon_erasure;
 use super::{
     conv::ConvCode,
     encode::{DecodeToInt, EncodeFromBytes},
-    signal::{self, BandPass},
+    signal::{self, BandPass, Deinterleave, InterpolateBack, InterpolateFront},
     Preamble, Symbol, Warmup,
 };
 use crate::{
@@ -33,6 +33,7 @@ use crate::{
 use bitvec::prelude::*;
 use cpal::SupportedStreamConfig;
 use crc::{Crc, CRC_16_IBM_SDLC};
+use num::Complex;
 use reed_solomon_erasure::galois_8::ReedSolomon;
 use std::{
     mem,
@@ -122,6 +123,7 @@ impl AtherOutputStream {
 
 impl AtherOutputStream {
     pub async fn write(&self, bits: &BitSlice) {
+        self.write_prelude().await;
         let mut frames = vec![self.config.warmup.0.clone()];
         frames.extend(encode_packet(&self.config, bits));
         let track = AudioTrack::new(self.config.stream_config.clone(), frames.concat().into());
@@ -129,6 +131,7 @@ impl AtherOutputStream {
     }
 
     pub async fn write_timeout(&self, bits: &BitSlice, timeout: Duration) {
+        self.write_prelude().await;
         let mut frames = vec![self.config.warmup.0.clone()];
         frames.extend(encode_packet(&self.config, bits));
         let track = AudioTrack::new(self.config.stream_config.clone(), frames.concat().into());
@@ -138,6 +141,15 @@ impl AtherOutputStream {
             } => {}
             _ = tokio::time::sleep(timeout) => {}
         };
+    }
+
+    async fn write_prelude(&self) {
+        let mut prelude = self.config.warmup.0.to_vec();
+        prelude.extend(self.config.preamble.0.interpolate_back().iter());
+        prelude.extend(self.config.symbols.0 .0.interpolate_back().iter());
+        prelude.extend(self.config.symbols.0 .0.interpolate_front().iter());
+        let track = AudioTrack::new(self.config.stream_config.clone(), prelude.into());
+        self.stream.write(track).await;
     }
 }
 
@@ -162,10 +174,6 @@ fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<AudioSample
         data_shards + parity_shards,
         vec![0u8; LENGTH_BYTE_LEN + PAYLOAD_BYTE_LEN],
     );
-    // eprintln!(
-    //     "Generate {} data shards and {} parity shards",
-    //     data_shards, parity_shards
-    // );
 
     let reed = ReedSolomon::new(data_shards, parity_shards).unwrap();
     reed.encode(&mut shards).unwrap();
@@ -190,15 +198,30 @@ fn encode_packet(config: &AtherStreamConfig, bits: &BitSlice) -> Vec<AudioSample
 
             let body = shard.encode();
 
-            let mut frame = vec![];
-            frame.extend(header.encode(&config.symbols));
-            frame.extend(body.encode(&config.symbols));
+            let mut samples: Vec<f32> = vec![];
+            samples.extend(config.preamble.0.interpolate_back().iter());
 
-            let mut samples = vec![];
-            samples.push(config.preamble.0.clone());
-            samples.extend(frame.into_iter().map(|symbol| symbol.0).collect::<Vec<_>>());
+            let header = header
+                .encode(&config.symbols)
+                .into_iter()
+                .map(|symbol| symbol.0)
+                .collect::<Vec<_>>()
+                .concat();
+            samples.extend(header.interpolate_back().iter());
 
-            samples.concat().into()
+            let body = body
+                .encode(&config.symbols)
+                .into_iter()
+                .map(|symbol| symbol.0)
+                .collect::<Vec<_>>()
+                .concat();
+
+            samples.extend(itertools::interleave(
+                body[..body.len() / 2].iter(),
+                body[body.len() / 2..].iter(),
+            ));
+
+            samples.into()
         })
         .collect::<Vec<_>>()
 }
@@ -248,7 +271,7 @@ impl AtherInputStream {
         tokio::spawn({
             let task = task.clone();
             async move {
-                let mut buf = vec![];
+                let mut buf = (vec![], vec![]);
                 while let Some(cmd) = reciever.recv().await {
                     match cmd {
                         AtherInputTaskCmd::Running => {
@@ -264,7 +287,8 @@ impl AtherInputStream {
                                     }
                                 }
                                 None => {
-                                    buf.clear();
+                                    buf.0.clear();
+                                    buf.1.clear();
                                 }
                             }
                         }
@@ -359,67 +383,57 @@ impl Stream for AtherInputStream {
 async fn decode_frame(
     config: &AtherStreamConfig,
     stream: &mut AudioInputStream<f32>,
-    buf: &mut Vec<f32>,
+    buf: &mut (Vec<f32>, Vec<f32>),
+    metric: &AtherStreamMetric,
 ) -> Option<(BitVec, usize, Vec<u8>)> {
     let sample_rate = config.stream_config.sample_rate().0 as f32;
     let band_pass = (
         config.frequency as f32 - 1000.,
         config.frequency as f32 + 1000.,
     );
-    let preamble_len = config.preamble.0.len();
     let symbol_len = config.symbols.0 .0.len();
     let conv = ConvCode::new(CONV_GENERATORS);
 
     // println!("Decode frame...");
-
-    loop {
-        if buf.len() >= preamble_len {
-            let (index, value) = signal::synchronize(&config.preamble.0, buf);
-            if value > PREAMBLE_CORR_THRESHOLD {
-                if (index + preamble_len as isize) < (buf.len() as isize) {
-                    *buf = buf.split_off((index + preamble_len as isize) as usize);
-                    break;
-                }
-            } else {
-                *buf = buf.split_off(buf.len() - preamble_len);
-            }
-        }
-        match stream.next().await {
-            Some(sample) => buf.extend(sample.iter()),
-            None => return None,
-        }
-    }
+    decode_preamble(config, stream, buf).await?;
 
     let mut header = bitvec![];
     while header.len() < HEADER_BITS_LEN {
-        if buf.len() >= symbol_len {
-            let mut symbol = buf[..symbol_len].to_owned();
+        if buf.0.len() >= symbol_len {
+            let mut symbol = buf.0[..symbol_len].to_owned();
             symbol.band_pass(sample_rate, band_pass);
             let value = signal::dot_product(&config.symbols.1 .0, &symbol);
             header.push(value > 0.);
-            *buf = buf.split_off(symbol_len);
+            buf.0 = buf.0.split_off(symbol_len);
+            buf.1 = buf.1.split_off(symbol_len);
         } else {
-            match stream.next().await {
-                Some(sample) => buf.extend(sample.iter()),
-                None => return None,
-            }
+            expand_buf(stream, buf).await?;
         }
     }
 
-    let mut body = bitvec![];
-    while body.len() < BODY_BITS_LEN {
-        if buf.len() >= symbol_len {
-            let mut symbol = buf[..symbol_len].to_owned();
-            symbol.band_pass(sample_rate, band_pass);
-            let value = signal::dot_product(&config.symbols.1 .0, &symbol);
-            body.push(value > 0.);
+    // TODO: Add channel metric adjustment
+    let mut body = (bitvec![], bitvec![]);
+    while body.0.len() < BODY_BITS_LEN {
+        if buf.0.len() >= symbol_len {
+            let mut symbol = (
+                buf.0[..symbol_len].to_owned(),
+                buf.1[..symbol_len].to_owned(),
+            );
+            symbol.0.band_pass(sample_rate, band_pass);
+            symbol.1.band_pass(sample_rate, band_pass);
+            let symbol = decode_symbol(symbol, metric);
 
-            *buf = buf.split_off(symbol_len);
+            let value = (
+                signal::dot_product(&config.symbols.1 .0, &symbol.0),
+                signal::dot_product(&config.symbols.1 .0, &symbol.1),
+            );
+            body.0.push(value.0 > 0.);
+            body.1.push(value.1 > 0.);
+
+            buf.0 = buf.0.split_off(symbol_len);
+            buf.1 = buf.1.split_off(symbol_len);
         } else {
-            match stream.next().await {
-                Some(sample) => buf.extend(sample.iter()),
-                None => return None,
-            }
+            expand_buf(stream, buf).await?;
         }
     }
 
@@ -431,21 +445,176 @@ async fn decode_frame(
     let parity = DecodeToInt::<usize>::decode(parity);
     // println!("Receive parity: {}", parity);
 
-    let body = DecodeToBytes::decode(&body);
+    let mut bits = bitvec![];
+    bits.extend(&body.0);
+    bits.extend(&body.1);
+    let body = DecodeToBytes::decode(&bits);
     // println!("Receive body: {:?}", body);
 
     Some((meta, parity, body))
 }
 
+fn decode_symbol(symbol: (Vec<f32>, Vec<f32>), metric: &AtherStreamMetric) -> (Vec<f32>, Vec<f32>) {
+    let full = symbol.0.len() * 2 - 1;
+    let symbol_fft = (signal::rfft(&symbol.0, full), signal::rfft(&symbol.1, full));
+
+    let factor = (
+        (
+            metric.1 .1 / (metric.0 .0 * metric.1 .1 - metric.1 .0 * metric.0 .1),
+            -metric.0 .1 / (metric.0 .0 * metric.1 .1 - metric.1 .0 * metric.0 .1),
+        ),
+        (
+            metric.1 .0 / (metric.0 .1 * metric.1 .0 - metric.1 .1 * metric.0 .0),
+            -metric.0 .0 / (metric.0 .1 * metric.1 .0 - metric.1 .1 * metric.0 .0),
+        ),
+    );
+
+    let symbol_fft = (
+        symbol_fft
+            .0
+            .iter()
+            .zip(symbol_fft.1.iter())
+            .map(|item| factor.0 .0 * item.0 + factor.0 .1 * item.1)
+            .collect::<Vec<_>>(),
+        symbol_fft
+            .0
+            .iter()
+            .zip(symbol_fft.1.iter())
+            .map(|item| factor.1 .0 * item.0 + factor.1 .1 * item.1)
+            .collect::<Vec<_>>(),
+    );
+
+    let symbol_ifft = (
+        signal::irfft(&symbol_fft.0, full),
+        signal::irfft(&symbol_fft.1, full),
+    );
+
+    (
+        symbol_ifft
+            .0
+            .iter()
+            .map(|&item| item / full as f32)
+            .collect(),
+        symbol_ifft
+            .1
+            .iter()
+            .map(|&item| item / full as f32)
+            .collect(),
+    )
+}
+
+async fn expand_buf(
+    stream: &mut AudioInputStream<f32>,
+    buf: &mut (Vec<f32>, Vec<f32>),
+) -> Option<()> {
+    let sample = stream.next().await?;
+    let sample = sample.deinterleave();
+    buf.0.extend(sample.0.iter());
+    buf.1.extend(sample.1.iter());
+    Some(())
+}
+
+async fn decode_preamble(
+    config: &AtherStreamConfig,
+    stream: &mut AudioInputStream<f32>,
+    buf: &mut (Vec<f32>, Vec<f32>),
+) -> Option<()> {
+    let preamble_len = config.preamble.0.len();
+    loop {
+        if buf.0.len() >= preamble_len {
+            let (index, value) = signal::synchronize(&config.preamble.0, &buf.0);
+            if value > PREAMBLE_CORR_THRESHOLD {
+                if (index + preamble_len as isize) < (buf.0.len() as isize) {
+                    buf.0 = buf.0.split_off((index + preamble_len as isize) as usize);
+                    buf.1 = buf.1.split_off((index + preamble_len as isize) as usize);
+                    break;
+                }
+            } else {
+                buf.0 = buf.0.split_off(buf.0.len() - preamble_len);
+                buf.1 = buf.1.split_off(buf.1.len() - preamble_len);
+            }
+        }
+        expand_buf(stream, buf).await?;
+    }
+    Some(())
+}
+
+type AtherStreamMetric = ((Complex<f32>, Complex<f32>), (Complex<f32>, Complex<f32>));
+
+async fn decode_prelude(
+    config: &AtherStreamConfig,
+    stream: &mut AudioInputStream<f32>,
+    buf: &mut (Vec<f32>, Vec<f32>),
+) -> Option<AtherStreamMetric> {
+    let sample_rate = config.stream_config.sample_rate().0 as f32;
+    let band_pass = (
+        config.frequency as f32 - 1000.,
+        config.frequency as f32 + 1000.,
+    );
+    let symbol_len = config.symbols.0 .0.len();
+
+    decode_preamble(config, stream, buf).await?;
+
+    let mut prelude = ((vec![], vec![]), (vec![], vec![]));
+    loop {
+        if buf.0.len() >= symbol_len {
+            let mut symbol = (
+                buf.0[..symbol_len].to_owned(),
+                buf.1[..symbol_len].to_owned(),
+            );
+            symbol.0.band_pass(sample_rate, band_pass);
+            symbol.1.band_pass(sample_rate, band_pass);
+            prelude.0 = symbol;
+
+            buf.0 = buf.0.split_off(symbol_len);
+            buf.1 = buf.1.split_off(symbol_len);
+            break;
+        } else {
+            expand_buf(stream, buf).await?;
+        }
+    }
+
+    loop {
+        if buf.0.len() >= symbol_len {
+            let mut symbol = (
+                buf.0[..symbol_len].to_owned(),
+                buf.1[..symbol_len].to_owned(),
+            );
+            symbol.0.band_pass(sample_rate, band_pass);
+            symbol.1.band_pass(sample_rate, band_pass);
+            prelude.1 = symbol;
+
+            buf.0 = buf.0.split_off(symbol_len);
+            buf.1 = buf.1.split_off(symbol_len);
+            break;
+        } else {
+            expand_buf(stream, buf).await?;
+        }
+    }
+
+    Some((
+        (
+            signal::characterize(&prelude.0 .0, &config.symbols.0 .0),
+            signal::characterize(&prelude.0 .1, &config.symbols.0 .0),
+        ),
+        (
+            signal::characterize(&prelude.1 .0, &config.symbols.0 .0),
+            signal::characterize(&prelude.1 .1, &config.symbols.0 .0),
+        ),
+    ))
+}
+
 async fn decode_packet(
     config: &AtherStreamConfig,
     stream: &mut AudioInputStream<f32>,
-    buf: &mut Vec<f32>,
+    buf: &mut (Vec<f32>, Vec<f32>),
 ) -> Option<BitVec> {
+    let metric = decode_prelude(config, stream, buf).await?;
+
     let mut shards = vec![];
     let (mut data_shards, mut parity_shards) = (0, 0);
     loop {
-        match decode_frame(config, stream, buf).await {
+        match decode_frame(config, stream, buf, &metric).await {
             Some((meta, parity, body)) => {
                 let recieved = PARITY_ALGORITHM.checksum(&body) as usize;
                 if recieved == parity {

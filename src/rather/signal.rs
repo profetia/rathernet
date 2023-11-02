@@ -18,7 +18,7 @@ pub fn rfft(source: &[f32], len: usize) -> Box<[Complex<f32>]> {
     spectrum.into()
 }
 
-fn irfft(source: &[Complex<f32>], len: usize) -> Box<[f32]> {
+pub fn irfft(source: &[Complex<f32>], len: usize) -> Box<[f32]> {
     let mut real_planner = RealFftPlanner::<f32>::new();
     let fft = real_planner.plan_fft_inverse(len);
 
@@ -56,6 +56,21 @@ pub fn correlate(volume: &[f32], kernel: &[f32]) -> Box<[f32]> {
         .copied()
         .map(|item| item / full as f32)
         .collect()
+}
+
+pub fn characterize(volume: &[f32], kernel: &[f32]) -> Complex<f32> {
+    assert_eq!(volume.len(), kernel.len());
+    let full = volume.len() + kernel.len() - 1;
+    let volume_fft = rfft(volume, full);
+    let kernel_fft = rfft(kernel, full);
+
+    let metrics = volume_fft
+        .iter()
+        .zip(kernel_fft.iter())
+        .map(|(volume, kernel)| volume / kernel);
+    let len = metrics.len();
+
+    metrics.sum::<Complex<f32>>() / len as f32
 }
 
 pub trait ArgMax
@@ -211,6 +226,89 @@ impl BandPass for Vec<f32> {
     fn band_pass(&mut self, sample_rate: f32, band: (f32, f32)) {
         self.low_pass(sample_rate, band.1);
         self.high_pass(sample_rate, band.0);
+    }
+}
+
+pub trait InterpolateBack
+where
+    Self: AsRef<[f32]>,
+{
+    fn interpolate_back(&self) -> Self;
+}
+
+impl InterpolateBack for Box<[f32]> {
+    fn interpolate_back(&self) -> Box<[f32]> {
+        let zeros = vec![0f32; self.len()];
+        itertools::interleave(self.iter().copied(), zeros)
+            .collect::<Vec<_>>()
+            .into()
+    }
+}
+
+impl InterpolateBack for Vec<f32> {
+    fn interpolate_back(&self) -> Vec<f32> {
+        let zeros = vec![0f32; self.len()];
+        itertools::interleave(self.iter().copied(), zeros).collect::<Vec<_>>()
+    }
+}
+
+pub trait InterpolateFront
+where
+    Self: AsRef<[f32]>,
+{
+    fn interpolate_front(&self) -> Self;
+}
+
+impl InterpolateFront for Box<[f32]> {
+    fn interpolate_front(&self) -> Box<[f32]> {
+        let zeros = vec![0f32; self.len()];
+        itertools::interleave(zeros, self.iter().copied())
+            .collect::<Vec<_>>()
+            .into()
+    }
+}
+
+impl InterpolateFront for Vec<f32> {
+    fn interpolate_front(&self) -> Vec<f32> {
+        let zeros = vec![0f32; self.len()];
+        itertools::interleave(zeros, self.iter().copied()).collect::<Vec<_>>()
+    }
+}
+
+pub trait Deinterleave
+where
+    Self: AsRef<[f32]> + Sized,
+{
+    fn deinterleave(&self) -> (Self, Self);
+}
+
+impl Deinterleave for Box<[f32]> {
+    fn deinterleave(&self) -> (Self, Self) {
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for (i, item) in self.iter().enumerate() {
+            if i % 2 == 0 {
+                left.push(*item);
+            } else {
+                right.push(*item);
+            }
+        }
+        (left.into(), right.into())
+    }
+}
+
+impl Deinterleave for Vec<f32> {
+    fn deinterleave(&self) -> (Self, Self) {
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for (i, item) in self.iter().enumerate() {
+            if i % 2 == 0 {
+                left.push(*item);
+            } else {
+                right.push(*item);
+            }
+        }
+        (left, right)
     }
 }
 
