@@ -23,8 +23,7 @@ extern crate reed_solomon_erasure;
 use super::{
     conv::ConvCode,
     encode::{DecodeToInt, EncodeFromBytes},
-    signal::{self, BandPass},
-    Preamble, Symbol, Warmup,
+    signal, Preamble, Symbol, Warmup,
 };
 use crate::{
     rather::encode::DecodeToBytes,
@@ -44,7 +43,7 @@ use std::{
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_stream::{Stream, StreamExt};
 
-const WARMUP_SYMBOL_LEN: usize = 8;
+const WARMUP_SYMBOL_LEN: usize = 32;
 const PREAMBLE_SYMBOL_LEN: usize = 32; // 8 | 16 | 32 | 64
 const PREAMBLE_CORR_THRESHOLD: f32 = 0.15;
 
@@ -68,13 +67,13 @@ const META_RESERVED_BITS_LEN: usize = 2;
 const META_BITS_LEN: usize = META_FLAG_BITS_LEN + META_FLAG_BITS_LEN + META_RESERVED_BITS_LEN;
 
 const PARITY_ALGORITHM: Crc<u16> = Crc::<u16>::new(&CRC_16_IBM_SDLC);
-const PARITY_RATIO: f32 = 0.25;
+const PARITY_RATIO: f32 = 0.15;
 const PARITY_BYTE_LEN: usize = 2;
 const PARITY_BITS_LEN: usize = PARITY_BYTE_LEN * 8;
 
 const LENGTH_BYTE_LEN: usize = 2;
 const LENGTH_BITS_LEN: usize = LENGTH_BYTE_LEN * 8;
-const PAYLOAD_BYTE_LEN: usize = 8;
+const PAYLOAD_BYTE_LEN: usize = 32;
 const PAYLOAD_BITS_LEN: usize = PAYLOAD_BYTE_LEN * 8;
 
 const META_ENCODED_BITS_LEN: usize = (META_BITS_LEN + CONV_ORDER) * CONV_FACTOR;
@@ -82,6 +81,10 @@ const HEADER_BITS_LEN: usize = META_ENCODED_BITS_LEN + PARITY_BITS_LEN;
 const BODY_BITS_LEN: usize = LENGTH_BITS_LEN + PAYLOAD_BITS_LEN;
 #[allow(dead_code)]
 const PACKET_BITS_LEN: usize = HEADER_BITS_LEN + BODY_BITS_LEN;
+
+pub const SWEEP_STARTBAND: f32 = 2000.;
+pub const SWEEP_ENDBAND: f32 = 6000.;
+pub const SWEEP_GAP: f32 = 5000.;
 
 #[derive(Debug, Clone)]
 pub struct AtherStreamConfig {
@@ -361,11 +364,6 @@ async fn decode_frame(
     stream: &mut AudioInputStream<f32>,
     buf: &mut Vec<f32>,
 ) -> Option<(BitVec, usize, Vec<u8>)> {
-    let sample_rate = config.stream_config.sample_rate().0 as f32;
-    let band_pass = (
-        config.frequency as f32 - 1000.,
-        config.frequency as f32 + 1000.,
-    );
     let preamble_len = config.preamble.0.len();
     let symbol_len = config.symbols.0 .0.len();
     let conv = ConvCode::new(CONV_GENERATORS);
@@ -393,10 +391,12 @@ async fn decode_frame(
     let mut header = bitvec![];
     while header.len() < HEADER_BITS_LEN {
         if buf.len() >= symbol_len {
-            let mut symbol = buf[..symbol_len].to_owned();
-            symbol.band_pass(sample_rate, band_pass);
-            let value = signal::dot_product(&config.symbols.1 .0, &symbol);
-            header.push(value > 0.);
+            let symbol = buf[..symbol_len].to_owned();
+            let ((_, value_zero), (_, value_one)) = (
+                signal::synchronize(&config.symbols.0 .0, &symbol),
+                signal::synchronize(&config.symbols.1 .0, &symbol),
+            );
+            header.push(value_one > value_zero);
             *buf = buf.split_off(symbol_len);
         } else {
             match stream.next().await {
@@ -409,11 +409,12 @@ async fn decode_frame(
     let mut body = bitvec![];
     while body.len() < BODY_BITS_LEN {
         if buf.len() >= symbol_len {
-            let mut symbol = buf[..symbol_len].to_owned();
-            symbol.band_pass(sample_rate, band_pass);
-            let value = signal::dot_product(&config.symbols.1 .0, &symbol);
-            body.push(value > 0.);
-
+            let symbol = buf[..symbol_len].to_owned();
+            let ((_, value_zero), (_, value_one)) = (
+                signal::synchronize(&config.symbols.0 .0, &symbol),
+                signal::synchronize(&config.symbols.1 .0, &symbol),
+            );
+            body.push(value_one > value_zero);
             *buf = buf.split_off(symbol_len);
         } else {
             match stream.next().await {

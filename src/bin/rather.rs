@@ -228,12 +228,12 @@ async fn main() -> Result<()> {
 
             let read_stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
             let mut read_ather = AtherInputStream::new(
-                AtherStreamConfig::new(10000, 1000, config.clone()),
+                AtherStreamConfig::new(10000, 1200, config.clone()),
                 read_stream,
             );
             let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
             let write_ather =
-                AtherOutputStream::new(AtherStreamConfig::new(10000, 1000, config), write_stream);
+                AtherOutputStream::new(AtherStreamConfig::new(10000, 1200, config), write_stream);
 
             let source = fs::read_to_string(source)?;
             let mut bits = bitvec![];
