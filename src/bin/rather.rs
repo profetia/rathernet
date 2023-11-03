@@ -133,7 +133,7 @@ async fn main() -> Result<()> {
                 default_config.sample_format(),
             );
             let stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
-            let ather = AtherOutputStream::new(AtherStreamConfig::new(5000, 2000, config), stream);
+            let ather = AtherOutputStream::new(AtherStreamConfig::new(10000, 1000, config), stream);
 
             let file = fs::read_to_string(file)?;
             let mut bits = bitvec![];
@@ -171,7 +171,7 @@ async fn main() -> Result<()> {
             );
             let stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
             let mut ather =
-                AtherInputStream::new(AtherStreamConfig::new(5000, 2000, config), stream);
+                AtherInputStream::new(AtherStreamConfig::new(10000, 1000, config), stream);
             let buf = ather.next().await.unwrap();
 
             if let Some(file) = file {
@@ -228,12 +228,12 @@ async fn main() -> Result<()> {
 
             let read_stream = AudioInputStream::try_from_device_config(&device, config.clone())?;
             let mut read_ather = AtherInputStream::new(
-                AtherStreamConfig::new(5000, 2000, config.clone()),
+                AtherStreamConfig::new(10000, 1000, config.clone()),
                 read_stream,
             );
             let write_stream = AudioOutputStream::try_from_device_config(&device, config.clone())?;
             let write_ather =
-                AtherOutputStream::new(AtherStreamConfig::new(5000, 2000, config), write_stream);
+                AtherOutputStream::new(AtherStreamConfig::new(10000, 1000, config), write_stream);
 
             let source = fs::read_to_string(source)?;
             let mut bits = bitvec![];
