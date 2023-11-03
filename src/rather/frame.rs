@@ -1,4 +1,4 @@
-use super::stream::{SWEEP_ENDBAND, SWEEP_GAP, SWEEP_PEAKBAND, SWEEP_STARTBAND};
+use super::stream::{SWEEP_ENDBAND, SWEEP_GAP, SWEEP_STARTBAND};
 use crate::raudio::AudioSamples;
 use std::f32::consts::PI;
 
@@ -59,16 +59,7 @@ impl Symbol {
         let len = (duration as f32 * sample_rate as f32) as i32;
         let zero_sweep = (0..len)
             .map(|item| {
-                if item < len {
-                    //from SWEEP_STARTBAND to SWEEP_PEAKBAND
-                    SWEEP_STARTBAND
-                        + item as f32 * (SWEEP_PEAKBAND - SWEEP_STARTBAND) / (len) as f32
-                } else {
-                    //from SWEEP_PEAKBAND to SWEEP_ENDBAND
-                    SWEEP_PEAKBAND
-                        - (item - len / 2) as f32 * (SWEEP_PEAKBAND - SWEEP_ENDBAND)
-                            / (len / 2) as f32
-                }
+                SWEEP_STARTBAND + item as f32 * (SWEEP_ENDBAND - SWEEP_STARTBAND) / (len) as f32
             })
             .scan(0.0f32, |acc, item| {
                 *acc += item / sample_rate as f32;
@@ -78,17 +69,8 @@ impl Symbol {
             .collect::<AudioSamples<f32>>();
         let one_sweep = (0..len)
             .map(|item| {
-                if item < len {
-                    //from SWEEP_STARTBAND + SWEEP_GAP to SWEEP_PEAKBAND + SWEEP_GAP
-                    SWEEP_STARTBAND
-                        + SWEEP_GAP
-                        + item as f32 * (SWEEP_PEAKBAND - SWEEP_STARTBAND) / (len) as f32
-                } else {
-                    //from SWEEP_PEAKBAND + SWEEP_GAP to SWEEP_ENDBAND + SWEEP_GAP
-                    SWEEP_PEAKBAND + SWEEP_GAP
-                        - (item - len / 2) as f32 * (SWEEP_PEAKBAND - SWEEP_ENDBAND)
-                            / (len / 2) as f32
-                }
+                SWEEP_STARTBAND + SWEEP_GAP + item as f32 * (SWEEP_ENDBAND - SWEEP_STARTBAND) / (len) as f32
+                // SWEEP_ENDBAND + SWEEP_GAP + item as f32 * (SWEEP_STARTBAND - SWEEP_ENDBAND) / (len) as f32
             })
             .scan(0.0f32, |acc, item| {
                 *acc += item / sample_rate as f32;
