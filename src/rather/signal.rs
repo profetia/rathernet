@@ -123,16 +123,6 @@ pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).fold(0., |acc, (a, b)| acc + a * b)
 }
 
-pub fn dot_product_fixpoint(a: &[f32], b: &[f32]) -> f32 {
-    let a_fixed: Vec<I32F32> = a.iter().map(|&v| I32F32::from_num(v)).collect();
-    let b_fixed: Vec<I32F32> = b.iter().map(|&k| I32F32::from_num(k)).collect();
-    a_fixed
-        .iter()
-        .zip(b_fixed.iter())
-        .fold(I32F32::from_bits(0), |acc, (a, b)| acc + (a * b))
-        .to_num::<f32>()
-}
-
 pub trait LowPass
 where
     Self: AsMut<[f32]>,

@@ -74,7 +74,7 @@ const PARITY_BITS_LEN: usize = PARITY_BYTE_LEN * 8;
 
 const LENGTH_BYTE_LEN: usize = 2;
 const LENGTH_BITS_LEN: usize = LENGTH_BYTE_LEN * 8;
-const PAYLOAD_BYTE_LEN: usize = 16;
+const PAYLOAD_BYTE_LEN: usize = 8;
 const PAYLOAD_BITS_LEN: usize = PAYLOAD_BYTE_LEN * 8;
 
 const META_ENCODED_BITS_LEN: usize = (META_BITS_LEN + CONV_ORDER) * CONV_FACTOR;
@@ -395,7 +395,7 @@ async fn decode_frame(
         if buf.len() >= symbol_len {
             let mut symbol = buf[..symbol_len].to_owned();
             symbol.band_pass(sample_rate, band_pass);
-            let value = signal::dot_product_fixpoint(&config.symbols.1 .0, &symbol);
+            let value = signal::dot_product(&config.symbols.1 .0, &symbol);
             header.push(value > 0.);
             *buf = buf.split_off(symbol_len);
         } else {
@@ -411,7 +411,7 @@ async fn decode_frame(
         if buf.len() >= symbol_len {
             let mut symbol = buf[..symbol_len].to_owned();
             symbol.band_pass(sample_rate, band_pass);
-            let value = signal::dot_product_fixpoint(&config.symbols.1 .0, &symbol);
+            let value = signal::dot_product(&config.symbols.1 .0, &symbol);
             body.push(value > 0.);
 
             *buf = buf.split_off(symbol_len);
