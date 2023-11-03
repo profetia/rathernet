@@ -1,4 +1,4 @@
-git checkout -b part8 f376edf0caa0d022db7158f548baff32e8a67977
+git checkout -b part8 f376edf
 
 # Set the windows system volume to 40%
 # Set the speaker volume botton to 90%
