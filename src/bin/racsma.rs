@@ -410,7 +410,7 @@ async fn main() -> Result<()> {
         Commands::Arp {
             device,
             address,
-            target,
+            target: ip,
         } => {
             let device = create_device(device)?;
             let stream_config = create_stream_config(&device)?;
@@ -419,9 +419,10 @@ async fn main() -> Result<()> {
             let socket_config = AcsmaSocketConfig::new(address, None, ather_config);
             let (tx_socket, _) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
 
-            let target = u32::from_be_bytes(target.octets()) as usize;
+            let target = u32::from_be_bytes(ip.octets()) as usize;
+            println!("Who has {}? Tell {}", ip, address);
             let result = tx_socket.arp(target).await?;
-            println!("Arp: {}", Ipv4Addr::from(result as u32));
+            println!("{} is at {}", ip, result);
         }
     }
     Ok(())
