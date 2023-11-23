@@ -1,5 +1,6 @@
 use super::builtin::{
-    ADDRESS_BITS_LEN, FLAG_BITS_LEN, PARITY_ALGORITHM, PARITY_BITS_LEN, SEQ_BITS_LEN, TYPE_BITS_LEN,
+    ADDRESS_BITS_LEN, FLAG_BITS_LEN, PARITY_ALGORITHM, PARITY_BITS_LEN, SEQ_BITS_LEN,
+    SOCKET_BROADCAST_ADDRESS, TYPE_BITS_LEN,
 };
 use crate::rather::encode::{DecodeToBytes, DecodeToInt};
 use anyhow::{Error, Result};
@@ -15,6 +16,8 @@ impl FrameType {
     pub const ACK: Self = Self(0b0000_0001);
     pub const MAC_PING_REQ: Self = Self(0b0000_0010);
     pub const MAC_PING_RESP: Self = Self(0b0000_0011);
+    pub const MAC_ARP_REQ: Self = Self(0b0000_0100);
+    pub const MAC_ARP_RESP: Self = Self(0b0000_0101);
 }
 
 impl From<FrameType> for usize {
@@ -373,10 +376,154 @@ impl TryFrom<BitVec> for MacPingRespFrame {
 }
 
 #[derive(Debug, Clone)]
+pub struct MacArpReqFrame {
+    header: FrameHeader,
+    target: usize,
+}
+
+impl MacArpReqFrame {
+    pub fn new(src: usize, target: usize) -> Self {
+        Self {
+            header: FrameHeader {
+                dest: SOCKET_BROADCAST_ADDRESS,
+                src,
+                seq: 0,
+                r#type: FrameType::MAC_ARP_REQ.into(),
+                flag: FrameFlag::empty(),
+            },
+            target,
+        }
+    }
+}
+
+impl Frame for MacArpReqFrame {
+    fn header(&self) -> &FrameHeader {
+        &self.header
+    }
+
+    fn payload(&self) -> Option<&BitSlice> {
+        Some(self.target.view_bits::<Lsb0>())
+    }
+}
+
+impl From<MacArpReqFrame> for BitVec {
+    fn from(value: MacArpReqFrame) -> Self {
+        let mut frame = BitVec::from(value.header);
+        frame.extend(value.target.view_bits::<Lsb0>());
+        frame.extend(checksum(&frame));
+        frame
+    }
+}
+
+impl TryFrom<BitVec> for MacArpReqFrame {
+    type Error = Error;
+
+    fn try_from(value: BitVec) -> Result<Self, Self::Error> {
+        verify(&value)?;
+        let header = FrameHeader::from(
+            &value[..ADDRESS_BITS_LEN
+                + ADDRESS_BITS_LEN
+                + SEQ_BITS_LEN
+                + TYPE_BITS_LEN
+                + FLAG_BITS_LEN],
+        );
+        if header.r#type != FrameType::MAC_ARP_REQ.into() {
+            return Err(FrameDecodeError::UnexpectedFrameType(
+                header.r#type,
+                FrameType::MAC_ARP_REQ.into(),
+            )
+            .into());
+        }
+        let sender = DecodeToInt::<usize>::decode(
+            &value[ADDRESS_BITS_LEN
+                + ADDRESS_BITS_LEN
+                + SEQ_BITS_LEN
+                + TYPE_BITS_LEN
+                + FLAG_BITS_LEN..value.len() - PARITY_BITS_LEN],
+        );
+        Ok(Self {
+            header,
+            target: sender,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MacArpRespFrame {
+    header: FrameHeader,
+    sender: usize,
+}
+
+impl MacArpRespFrame {
+    pub fn new(dest: usize, src: usize, sender: usize) -> Self {
+        Self {
+            header: FrameHeader {
+                dest,
+                src,
+                seq: 0,
+                r#type: FrameType::MAC_ARP_RESP.into(),
+                flag: FrameFlag::empty(),
+            },
+            sender,
+        }
+    }
+}
+
+impl Frame for MacArpRespFrame {
+    fn header(&self) -> &FrameHeader {
+        &self.header
+    }
+
+    fn payload(&self) -> Option<&BitSlice> {
+        Some(self.sender.view_bits::<Lsb0>())
+    }
+}
+
+impl From<MacArpRespFrame> for BitVec {
+    fn from(value: MacArpRespFrame) -> Self {
+        let mut frame = BitVec::from(value.header);
+        frame.extend(value.sender.view_bits::<Lsb0>());
+        frame.extend(checksum(&frame));
+        frame
+    }
+}
+
+impl TryFrom<BitVec> for MacArpRespFrame {
+    type Error = Error;
+
+    fn try_from(value: BitVec) -> Result<Self, Self::Error> {
+        verify(&value)?;
+        let header = FrameHeader::from(
+            &value[..ADDRESS_BITS_LEN
+                + ADDRESS_BITS_LEN
+                + SEQ_BITS_LEN
+                + TYPE_BITS_LEN
+                + FLAG_BITS_LEN],
+        );
+        if header.r#type != FrameType::MAC_ARP_RESP.into() {
+            return Err(FrameDecodeError::UnexpectedFrameType(
+                header.r#type,
+                FrameType::MAC_ARP_RESP.into(),
+            )
+            .into());
+        }
+        let sender = DecodeToInt::<usize>::decode(
+            &value[ADDRESS_BITS_LEN
+                + ADDRESS_BITS_LEN
+                + SEQ_BITS_LEN
+                + TYPE_BITS_LEN
+                + FLAG_BITS_LEN..value.len() - PARITY_BITS_LEN],
+        );
+        Ok(Self { header, sender })
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum AcsmaFrame {
     NonAck(NonAckFrame),
     Ack(AckFrame),
     MacPingResp(MacPingRespFrame),
+    MacArpResp(MacArpRespFrame),
 }
 
 impl From<AcsmaFrame> for BitVec {
@@ -385,6 +532,7 @@ impl From<AcsmaFrame> for BitVec {
             AcsmaFrame::NonAck(data) => data.into(),
             AcsmaFrame::Ack(ack) => ack.into(),
             AcsmaFrame::MacPingResp(ping) => ping.into(),
+            AcsmaFrame::MacArpResp(arp) => arp.into(),
         }
     }
 }
@@ -406,6 +554,15 @@ impl TryFrom<BitVec> for AcsmaFrame {
             Ok(AcsmaFrame::Ack(AckFrame { header }))
         } else if header.r#type == FrameType::MAC_PING_RESP.into() {
             Ok(AcsmaFrame::MacPingResp(MacPingRespFrame { header }))
+        } else if header.r#type == FrameType::MAC_ARP_RESP.into() {
+            let sender = DecodeToInt::<usize>::decode(
+                &value[ADDRESS_BITS_LEN
+                    + ADDRESS_BITS_LEN
+                    + SEQ_BITS_LEN
+                    + TYPE_BITS_LEN
+                    + FLAG_BITS_LEN..value.len() - PARITY_BITS_LEN],
+            );
+            Ok(AcsmaFrame::MacArpResp(MacArpRespFrame { header, sender }))
         } else {
             Ok(AcsmaFrame::NonAck(NonAckFrame::try_from_bitvec_unchecked(
                 value,
@@ -420,6 +577,7 @@ impl Frame for AcsmaFrame {
             AcsmaFrame::NonAck(data) => data.header(),
             AcsmaFrame::Ack(ack) => ack.header(),
             AcsmaFrame::MacPingResp(ping) => ping.header(),
+            AcsmaFrame::MacArpResp(arp) => arp.header(),
         }
     }
 
@@ -428,6 +586,7 @@ impl Frame for AcsmaFrame {
             AcsmaFrame::NonAck(data) => data.payload(),
             AcsmaFrame::Ack(ack) => ack.payload(),
             AcsmaFrame::MacPingResp(ping) => ping.payload(),
+            AcsmaFrame::MacArpResp(arp) => arp.payload(),
         }
     }
 }
@@ -436,6 +595,7 @@ impl Frame for AcsmaFrame {
 pub enum NonAckFrame {
     Data(DataFrame),
     MacPingReq(MacPingReqFrame),
+    MacArpReq(MacArpReqFrame),
 }
 
 impl NonAckFrame {
@@ -458,6 +618,15 @@ impl NonAckFrame {
             Ok(NonAckFrame::Data(DataFrame { header, payload }))
         } else if header.r#type == FrameType::MAC_PING_REQ.into() {
             Ok(NonAckFrame::MacPingReq(MacPingReqFrame { header }))
+        } else if header.r#type == FrameType::MAC_ARP_REQ.into() {
+            let target = DecodeToInt::<usize>::decode(
+                &value[ADDRESS_BITS_LEN
+                    + ADDRESS_BITS_LEN
+                    + SEQ_BITS_LEN
+                    + TYPE_BITS_LEN
+                    + FLAG_BITS_LEN..value.len() - PARITY_BITS_LEN],
+            );
+            Ok(NonAckFrame::MacArpReq(MacArpReqFrame { header, target }))
         } else if header.r#type == FrameType::ACK.into() {
             return Err(FrameDecodeError::UnexpectedFrameType(
                 header.r#type,
@@ -473,6 +642,7 @@ impl NonAckFrame {
         match self {
             NonAckFrame::Data(_) => other.r#type == FrameType::ACK.into(),
             NonAckFrame::MacPingReq(_) => other.r#type == FrameType::MAC_PING_RESP.into(),
+            NonAckFrame::MacArpReq(_) => other.r#type == FrameType::MAC_ARP_RESP.into(),
         }
     }
 }
@@ -482,6 +652,7 @@ impl From<NonAckFrame> for BitVec {
         match value {
             NonAckFrame::Data(data) => data.into(),
             NonAckFrame::MacPingReq(ping) => ping.into(),
+            NonAckFrame::MacArpReq(arp) => arp.into(),
         }
     }
 }
@@ -500,6 +671,7 @@ impl Frame for NonAckFrame {
         match self {
             NonAckFrame::Data(data) => data.header(),
             NonAckFrame::MacPingReq(ping) => ping.header(),
+            NonAckFrame::MacArpReq(arp) => arp.header(),
         }
     }
 
@@ -507,6 +679,7 @@ impl Frame for NonAckFrame {
         match self {
             NonAckFrame::Data(data) => data.payload(),
             NonAckFrame::MacPingReq(ping) => ping.payload(),
+            NonAckFrame::MacArpReq(arp) => arp.payload(),
         }
     }
 }

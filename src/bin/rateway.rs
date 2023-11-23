@@ -380,7 +380,11 @@ fn translate_adapter(
         config.address,
         config.netmask,
         config.gateway,
-        AcsmaSocketConfig::new(config.socket_config.address, ather_config),
+        AcsmaSocketConfig::new(
+            config.socket_config.address,
+            Some(u32::from_be_bytes(config.address.octets()) as usize),
+            ather_config,
+        ),
     )
 }
 
@@ -403,7 +407,11 @@ fn translate_nat(
         config.address,
         config.netmask,
         config.host,
-        AcsmaSocketConfig::new(config.socket_config.address, ather_config),
+        AcsmaSocketConfig::new(
+            config.socket_config.address,
+            Some(u32::from_be_bytes(config.address.octets()) as usize),
+            ather_config,
+        ),
         route_config,
     ))
 }
