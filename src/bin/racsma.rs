@@ -9,6 +9,7 @@ use rodio::DeviceTrait;
 use rodio::SupportedStreamConfig;
 use std::fs::{self, File};
 use std::io;
+use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use thiserror::Error;
 use tokio_stream::StreamExt;
@@ -121,6 +122,9 @@ enum Commands {
         /// The address that will be used to send the bits.
         #[clap(short, long, default_value = "0", value_parser = parse_address)]
         address: usize,
+        /// The ip address that will be used to serve the activities.
+        #[clap(short, long)]
+        ip: Option<Ipv4Addr>,
     },
     /// Ping a peer to check if it is alive.
     Ping {
@@ -133,6 +137,18 @@ enum Commands {
         /// The peer address that will be pinged.
         #[clap(short, long, default_value = "0", value_parser = parse_address)]
         peer: usize,
+    },
+    /// Arp a peer to check get its ip address.
+    Arp {
+        /// The device used to arp the peer.
+        #[clap(short, long)]
+        device: Option<String>,
+        /// The address that will be used to arp the peer.
+        #[clap(short, long, default_value = "0", value_parser = parse_address)]
+        address: usize,
+        /// The target ip address that will be arped.
+        #[arg(required = true)]
+        target: Ipv4Addr,
     },
 }
 
@@ -341,7 +357,7 @@ async fn main() -> Result<()> {
             let stream_config = create_stream_config(&device)?;
             let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
 
-            let socket_config = AcsmaSocketConfig::new(address, ather_config);
+            let socket_config = AcsmaSocketConfig::new(address, None, ather_config);
             let (tx_socket, mut rx_socket) =
                 AcsmaIoSocket::try_from_device(socket_config, &device)?;
 
@@ -358,17 +374,22 @@ async fn main() -> Result<()> {
             let stream_config = create_stream_config(&device)?;
             let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
 
-            let socket_config = AcsmaSocketConfig::new(address, ather_config);
+            let socket_config = AcsmaSocketConfig::new(address, None, ather_config);
             let (tx_socket, _) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
 
             tx_socket.perf(peer).await?;
         }
-        Commands::Serve { device, address } => {
+        Commands::Serve {
+            device,
+            address,
+            ip,
+        } => {
             let device = create_device(device)?;
             let stream_config = create_stream_config(&device)?;
             let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
 
-            let socket_config = AcsmaSocketConfig::new(address, ather_config);
+            let ip = ip.map(|ip| u32::from_be_bytes(ip.octets()) as usize);
+            let socket_config = AcsmaSocketConfig::new(address, ip, ather_config);
             let (_, mut rx_socket) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
 
             rx_socket.serve().await?;
@@ -382,9 +403,25 @@ async fn main() -> Result<()> {
             let stream_config = create_stream_config(&device)?;
             let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
 
-            let socket_config = AcsmaSocketConfig::new(address, ather_config);
+            let socket_config = AcsmaSocketConfig::new(address, None, ather_config);
             let (tx_socket, _) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
             tx_socket.ping(peer).await?;
+        }
+        Commands::Arp {
+            device,
+            address,
+            target,
+        } => {
+            let device = create_device(device)?;
+            let stream_config = create_stream_config(&device)?;
+            let ather_config = AtherStreamConfig::new(24000, stream_config.clone());
+
+            let socket_config = AcsmaSocketConfig::new(address, None, ather_config);
+            let (tx_socket, _) = AcsmaIoSocket::try_from_device(socket_config, &device)?;
+
+            let target = u32::from_be_bytes(target.octets()) as usize;
+            let result = tx_socket.arp(target).await?;
+            println!("Arp: {}", Ipv4Addr::from(result as u32));
         }
     }
     Ok(())

@@ -6,13 +6,15 @@ use super::{
         SOCKET_RECIEVE_TIMEOUT, SOCKET_SLOT_TIMEOUT,
     },
     frame::{
-        AckFrame, AcsmaFrame, DataFrame, Frame, FrameFlag, FrameHeader, MacPingReqFrame,
-        MacPingRespFrame, NonAckFrame,
+        AckFrame, AcsmaFrame, DataFrame, Frame, FrameFlag, FrameHeader, MacArpReqFrame,
+        MacArpRespFrame, MacPingReqFrame, MacPingRespFrame, NonAckFrame,
     },
     AcsmaIoError,
 };
 use crate::{
-    rather::{signal::Energy, AtherInputStream, AtherOutputStream, AtherStreamConfig},
+    rather::{
+        encode::DecodeToInt, signal::Energy, AtherInputStream, AtherOutputStream, AtherStreamConfig,
+    },
     raudio::{AsioDevice, AudioInputStream, AudioOutputStream},
 };
 use anyhow::Result;
@@ -36,14 +38,16 @@ use tokio_stream::StreamExt;
 
 #[derive(Clone)]
 pub struct AcsmaSocketConfig {
-    pub address: usize,
+    pub mac: usize,
+    pub ip: Option<usize>,
     pub ather_config: AtherStreamConfig,
 }
 
 impl AcsmaSocketConfig {
-    pub fn new(address: usize, ather_config: AtherStreamConfig) -> Self {
+    pub fn new(mac: usize, ip: Option<usize>, ather_config: AtherStreamConfig) -> Self {
         Self {
-            address,
+            mac,
+            ip,
             ather_config,
         }
     }
@@ -135,7 +139,7 @@ fn encode_packet(bits: &BitSlice, src: usize, dest: usize) -> impl Iterator<Item
 
 impl AcsmaSocketWriter {
     pub async fn write(&self, dest: usize, bits: &BitSlice) -> Result<()> {
-        let frames = encode_packet(bits, self.config.address, dest);
+        let frames = encode_packet(bits, self.config.mac, dest);
 
         for (index, frame) in frames.enumerate() {
             log::info!("Writing frame {}", index);
@@ -149,7 +153,7 @@ impl AcsmaSocketWriter {
     }
 
     pub async fn write_unchecked(&self, bits: &BitSlice) -> Result<()> {
-        let frames = encode_packet(bits, self.config.address, SOCKET_BROADCAST_ADDRESS);
+        let frames = encode_packet(bits, self.config.mac, SOCKET_BROADCAST_ADDRESS);
 
         for (_, frame) in frames.enumerate() {
             let (tx, rx) = oneshot::channel();
@@ -171,7 +175,7 @@ impl AcsmaSocketWriter {
     }
 
     pub async fn ping(&self, dest: usize) -> Result<()> {
-        let frame = NonAckFrame::MacPingReq(MacPingReqFrame::new(dest, self.config.address));
+        let frame = NonAckFrame::MacPingReq(MacPingReqFrame::new(dest, self.config.mac));
         loop {
             time::sleep(SOCKET_PING_INTERVAL).await;
             let (tx, rx) = oneshot::channel();
@@ -185,6 +189,14 @@ impl AcsmaSocketWriter {
             }
         }
     }
+
+    pub async fn arp(&self, target: usize) -> Result<usize> {
+        let frame = NonAckFrame::MacArpReq(MacArpReqFrame::new(self.config.mac, target));
+        let (tx, rx) = oneshot::channel();
+        self.write_tx.send((frame, tx))?;
+        let result = rx.await??.unwrap();
+        Ok(result.decode())
+    }
 }
 
 async fn perf_daemon(
@@ -194,7 +206,7 @@ async fn perf_daemon(
     send_tx: UnboundedSender<usize>,
 ) -> Result<()> {
     let bits = bitvec![usize, Lsb0; 0; PAYLOAD_BITS_LEN];
-    let frame = DataFrame::new(dest, config.address, 0, FrameFlag::empty(), bits);
+    let frame = DataFrame::new(dest, config.mac, 0, FrameFlag::empty(), bits);
 
     loop {
         let (tx, rx) = oneshot::channel();
@@ -237,7 +249,7 @@ async fn perf_main(mut send_rx: UnboundedReceiver<usize>) -> Result<()> {
     Err(AcsmaIoError::PerfTimeout(SOCKET_PERF_TIMEOUT.as_millis() as usize).into())
 }
 
-type AcsmaSocketWriteTask = (NonAckFrame, Sender<Result<()>>);
+type AcsmaSocketWriteTask = (NonAckFrame, Sender<Result<Option<BitVec>>>);
 
 pub struct AcsmaIoSocket;
 
@@ -314,13 +326,16 @@ async fn socket_daemon(
             // log::debug!("Got frame len: {}", bits.len());
             if let Ok(frame) = AcsmaFrame::try_from(bits) {
                 let header = frame.header().clone();
+                let payload = frame.payload();
                 // log::debug!("Recieve raw frame with index {}", header.seq);
                 if is_for_self(&config, &header) {
                     match frame {
                         AcsmaFrame::NonAck(non_ack) => {
-                            let bits = create_resp(&header, &non_ack);
+                            let bits = create_resp(&config, &non_ack);
                             // log::debug!("Sending ACK | MacPingResp for index {}", header.seq);
-                            write_ather.write(&bits).await?;
+                            if let Some(bits) = bits {
+                                write_ather.write(&bits).await?;
+                            }
                             // log::debug!("Sent ACK | MacPingResp for index {}", header.seq);
                             if read_jar.contains(&header.seq) {
                                 // log::debug!("Recieve frame {} but already in jar", header.seq);
@@ -333,7 +348,7 @@ async fn socket_daemon(
                         _ => {
                             // log::debug!("Recieve ACK | MacPingResp for index {}", header.seq);
                             if let Some(timer) = write_state {
-                                write_state = Some(clear_timer(&mut rng, &header, timer));
+                                write_state = Some(clear_timer(&mut rng, &header, payload, timer));
                             }
                         }
                     }
@@ -420,8 +435,8 @@ async fn socket_daemon(
 }
 
 fn is_for_self(config: &AcsmaSocketConfig, header: &FrameHeader) -> bool {
-    let is_dest = header.dest == config.address;
-    let is_broadcast = header.dest == SOCKET_BROADCAST_ADDRESS && header.src != config.address;
+    let is_dest = header.dest == config.mac;
+    let is_broadcast = header.dest == SOCKET_BROADCAST_ADDRESS && header.src != config.mac;
     is_dest || is_broadcast
 }
 
@@ -434,15 +449,29 @@ fn create_backoff(
     AcsmaSocketWriteTimer::backoff(Some(task), retry, duration)
 }
 
-fn create_resp(header: &FrameHeader, non_ack: &NonAckFrame) -> BitVec {
+fn create_resp(config: &AcsmaSocketConfig, non_ack: &NonAckFrame) -> Option<BitVec> {
+    let header = non_ack.header();
     match non_ack {
         NonAckFrame::Data(_) => {
             // log::debug!("Receive data for index {}", header.seq);
-            Into::<BitVec>::into(AckFrame::new(header.src, header.dest, header.seq))
+            Some(Into::<BitVec>::into(AckFrame::new(
+                header.src,
+                header.dest,
+                header.seq,
+            )))
         }
         NonAckFrame::MacPingReq(_) => {
             // log::debug!("Receive MacPingReq for index {}", header.seq);
-            Into::<BitVec>::into(MacPingRespFrame::new(header.src, header.dest))
+            Some(Into::<BitVec>::into(MacPingRespFrame::new(
+                header.src,
+                header.dest,
+            )))
+        }
+        NonAckFrame::MacArpReq(_) => {
+            // log::debug!("Receive MacArpReq for index {}", header.seq);
+            config
+                .ip
+                .map(|ip| Into::<BitVec>::into(MacArpRespFrame::new(header.src, header.dest, ip)))
         }
     }
 }
@@ -464,6 +493,7 @@ async fn is_channel_free(
 fn clear_timer(
     rng: &mut SmallRng,
     header: &FrameHeader,
+    payload: Option<&BitSlice>,
     mut timer: AcsmaSocketWriteTimer,
 ) -> AcsmaSocketWriteTimer {
     let inner = match &timer {
@@ -483,11 +513,11 @@ fn clear_timer(
                 AcsmaSocketWriteTimer::backoff(None, 0, duration),
             ) {
                 AcsmaSocketWriteTimer::Timeout { inner, .. } => {
-                    inner.ok();
+                    inner.ok(payload);
                     // log::debug!("Clear ACK timeout {}", header.seq);
                 }
                 AcsmaSocketWriteTimer::Backoff { inner, .. } => {
-                    inner.unwrap().ok();
+                    inner.unwrap().ok(payload);
                     // log::debug!("Clear Backoff timeout {}", header.seq);
                 }
             }
@@ -526,8 +556,9 @@ struct AcsmaSocketWriteTimerInner {
 }
 
 impl AcsmaSocketWriteTimerInner {
-    fn ok(self) {
-        let _ = self.task.1.send(Ok(()));
+    fn ok(self, payload: Option<&BitSlice>) {
+        let payload = payload.map(|payload| payload.to_owned());
+        self.task.1.send(Ok(payload)).ok();
     }
 
     fn link_error(self) {
