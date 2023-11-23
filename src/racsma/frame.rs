@@ -394,6 +394,10 @@ impl MacArpReqFrame {
             target,
         }
     }
+
+    pub fn target(&self) -> usize {
+        self.target
+    }
 }
 
 impl Frame for MacArpReqFrame {
@@ -466,6 +470,10 @@ impl MacArpRespFrame {
             },
             sender,
         }
+    }
+
+    pub fn sender(&self) -> usize {
+        self.sender
     }
 }
 
