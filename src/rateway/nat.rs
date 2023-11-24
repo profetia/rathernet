@@ -1,12 +1,11 @@
 use super::{
-    adapter::{flatten, write_daemon, AtewayAdapterTask},
+    adapter::{flatten, write_packet, AtewayAdapterTask},
     builtin::NAT_PORT_RANGE,
     AtewayIoError, AtewayIoSocket,
 };
 use crate::{
-    racsma::{AcsmaIoSocket, AcsmaSocketConfig, AcsmaSocketReader},
-    rateway::adapter::write_packet,
-    rather::encode::DecodeToBytes,
+    racsma::{AcsmaIoSocket, AcsmaSocketConfig, AcsmaSocketReader, AcsmaSocketWriter},
+    rather::encode::{DecodeToBytes, EncodeFromBytes},
     raudio::AsioDevice,
 };
 use anyhow::Result;
@@ -31,7 +30,7 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::{
-    sync::mpsc::{self, UnboundedSender},
+    sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
     task,
 };
 
@@ -147,6 +146,27 @@ async fn nat_daemon(config: AtewayNatConfig, device: AsioDevice) -> Result<()> {
     Ok(())
 }
 
+async fn write_daemon(
+    tx_socket: AcsmaSocketWriter,
+    mut write_rx: UnboundedReceiver<AtewayAdapterTask>,
+) -> Result<()> {
+    while let Some(((bytes, ip), tx)) = write_rx.recv().await {
+        let dest = tx_socket
+            .arp(u32::from_be_bytes(ip.octets()) as usize)
+            .await;
+
+        let result = match dest {
+            Ok(inner) => {
+                log::debug!("Resolve MAC address: {} -> {}", ip, inner);
+                tx_socket.write(inner, &bytes.encode()).await
+            }
+            Err(err) => Err(err),
+        };
+        let _ = tx.send(result);
+    }
+    Ok(())
+}
+
 async fn receive_daemon(
     config: AtewayNatConfig,
     write_tx: UnboundedSender<AtewayAdapterTask>,
@@ -174,7 +194,7 @@ async fn receive_daemon(
                             .set_destination(src)?
                             .set_source(dest)?
                             .update_checksum()?;
-                        write_packet(&write_tx, packet.as_ref().to_owned()).await?;
+                        write_packet(&write_tx, (packet.as_ref().to_owned(), src)).await?;
                     }
                 }
             } else if !net.contains(&dest) {
@@ -251,6 +271,7 @@ async fn send_daemon(
             let src = packet.source();
             let dest = packet.destination();
             let protocol = packet.protocol();
+            let mut target = dest;
 
             if dest == config.host {
                 if protocol == Protocol::Icmp {
@@ -268,6 +289,7 @@ async fn send_daemon(
                             );
                             echo.set_identifier(port)?.checked();
                             packet.set_destination(addr)?;
+                            target = addr;
                         } else {
                             continue;
                         }
@@ -290,6 +312,7 @@ async fn send_daemon(
                         udp.set_destination(port)?
                             .checked(&ip::Packet::V4(enclosing));
                         packet.set_destination(addr)?;
+                        target = addr;
                     } else {
                         continue;
                     }
@@ -311,6 +334,7 @@ async fn send_daemon(
                         tcp.set_destination(port)?
                             .checked(&ip::Packet::V4(enclosing));
                         packet.set_destination(addr)?;
+                        target = addr;
                     } else {
                         continue;
                     }
@@ -319,7 +343,7 @@ async fn send_daemon(
                 }
 
                 packet.update_checksum()?;
-                write_packet(&write_tx, packet.as_ref().to_owned()).await?;
+                write_packet(&write_tx, (packet.as_ref().to_owned(), target)).await?;
             }
         }
     }

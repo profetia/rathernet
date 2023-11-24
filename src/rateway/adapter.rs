@@ -9,6 +9,7 @@ use futures::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
+use ipnet::Ipv4Net;
 use packet::{
     icmp,
     ip::{self, Protocol},
@@ -116,7 +117,7 @@ async fn adapter_daemon(config: AtewayAdapterConfig, device: AsioDevice) -> Resu
 
     let (write_tx, write_rx) = mpsc::unbounded_channel();
 
-    let write_handle = tokio::spawn(write_daemon(tx_socket, write_rx));
+    let write_handle = tokio::spawn(write_daemon(config.clone(), tx_socket, write_rx));
     let receive_handle = tokio::spawn(receive_daemon(
         config.clone(),
         write_tx.clone(),
@@ -141,15 +142,34 @@ pub(super) async fn flatten<T>(handle: JoinHandle<Result<T>>) -> Result<T> {
     }
 }
 
-pub(super) type AtewayAdapterTask = (Vec<u8>, Sender<Result<()>>);
+pub(super) type AtewayAdapterTask = ((Vec<u8>, Ipv4Addr), Sender<Result<()>>);
 
-pub(super) async fn write_daemon(
+async fn write_daemon(
+    config: AtewayAdapterConfig,
     tx_socket: AcsmaSocketWriter,
     mut write_rx: UnboundedReceiver<AtewayAdapterTask>,
 ) -> Result<()> {
-    while let Some((bytes, tx)) = write_rx.recv().await {
-        let result = tx_socket.write_unchecked(&bytes.encode()).await;
-        let _ = tx.send(result);
+    let gateway_mac = tx_socket
+        .arp(u32::from_be_bytes(config.gateway.octets()) as usize)
+        .await?;
+    let net = Ipv4Net::with_netmask(config.address, config.netmask)?;
+    while let Some(((bytes, ip), tx)) = write_rx.recv().await {
+        let dest = if net.contains(&ip) {
+            tx_socket
+                .arp(u32::from_be_bytes(ip.octets()) as usize)
+                .await
+        } else {
+            Ok(gateway_mac)
+        };
+
+        let result = match dest {
+            Ok(inner) => {
+                log::debug!("Resolve MAC address: {} -> {}", ip, inner);
+                tx_socket.write(inner, &bytes.encode()).await
+            }
+            Err(err) => Err(err),
+        };
+        tx.send(result).ok();
     }
     Ok(())
 }
@@ -179,7 +199,7 @@ async fn receive_daemon(
                             .set_source(dest)?
                             .update_checksum()?;
 
-                        write_packet(&write_tx, packet.as_ref().to_owned()).await?;
+                        write_packet(&write_tx, (packet.as_ref().to_owned(), src)).await?;
                         continue;
                     }
                 } else if protocol == Protocol::Udp {
@@ -219,7 +239,7 @@ async fn send_daemon(
                 }
                 log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);
 
-                write_packet(&write_tx, bytes.to_owned()).await?;
+                write_packet(&write_tx, (bytes.to_owned(), dest)).await?;
             }
         }
     }
@@ -228,10 +248,10 @@ async fn send_daemon(
 
 pub(super) async fn write_packet(
     write_tx: &UnboundedSender<AtewayAdapterTask>,
-    bytes: Vec<u8>,
+    body: (Vec<u8>, Ipv4Addr),
 ) -> Result<()> {
     let (tx, rx) = oneshot::channel();
-    write_tx.send((bytes, tx))?;
+    write_tx.send((body, tx))?;
     rx.await??;
     Ok(())
 }
