@@ -386,12 +386,7 @@ async fn socket_daemon(
                                 // log::debug!("Medium state: free. Colision detected {}", header.seq);
                                 Some(create_backoff(&mut rng, inner, retry + 1))
                             } else {
-                                // log::debug!("Medium state: free. Resent {}", header.seq);
-                                println!(
-                                    "Resent {} for {} times",
-                                    inner.task.0.header().seq,
-                                    inner.resends + 1
-                                );
+                                // log::debug!("Medium state: free. Resent {}", header.seq);              
                                 Some(AcsmaSocketWriteTimer::timeout(
                                     inner.task,
                                     inner.resends + 1,

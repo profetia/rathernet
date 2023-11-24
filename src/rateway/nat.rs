@@ -4,7 +4,10 @@ use super::{
     AtewayIoError, AtewayIoSocket,
 };
 use crate::{
-    racsma::{AcsmaIoSocket, AcsmaSocketConfig, AcsmaSocketReader, AcsmaSocketWriter},
+    racsma::{
+        builtin::SOCKET_BROADCAST_ADDRESS, AcsmaIoSocket, AcsmaSocketConfig, AcsmaSocketReader,
+        AcsmaSocketWriter,
+    },
     rather::encode::{DecodeToBytes, EncodeFromBytes},
     raudio::AsioDevice,
 };
@@ -128,7 +131,7 @@ async fn nat_daemon(config: AtewayNatConfig, device: AsioDevice) -> Result<()> {
 
     let (write_tx, write_rx) = mpsc::unbounded_channel();
 
-    let write_handle = tokio::spawn(write_daemon(tx_socket, write_rx));
+    let write_handle = tokio::spawn(write_daemon(config.clone(), tx_socket, write_rx));
     let receive_handle = tokio::spawn(receive_daemon(
         config.clone(),
         write_tx.clone(),
@@ -147,13 +150,22 @@ async fn nat_daemon(config: AtewayNatConfig, device: AsioDevice) -> Result<()> {
 }
 
 async fn write_daemon(
+    config: AtewayNatConfig,
     tx_socket: AcsmaSocketWriter,
     mut write_rx: UnboundedReceiver<AtewayAdapterTask>,
 ) -> Result<()> {
+    let net = Ipv4Net::with_netmask(config.address, config.netmask)?;
     while let Some(((bytes, ip), tx)) = write_rx.recv().await {
-        let dest = tx_socket
-            .arp(u32::from_be_bytes(ip.octets()) as usize)
-            .await;
+        let dest = if ip == net.broadcast() || ip.is_broadcast() {
+            Ok(SOCKET_BROADCAST_ADDRESS)
+        } else if net.contains(&ip) {
+            log::debug!("Resolving MAC address: {}", ip);
+            tx_socket
+                .arp(u32::from_be_bytes(ip.octets()) as usize)
+                .await
+        } else {
+            Ok(config.socket_config.mac)
+        };
 
         let result = match dest {
             Ok(inner) => {
@@ -194,7 +206,12 @@ async fn receive_daemon(
                             .set_destination(src)?
                             .set_source(dest)?
                             .update_checksum()?;
-                        write_packet(&write_tx, (packet.as_ref().to_owned(), src)).await?;
+                        if write_packet(&write_tx, (packet.as_ref().to_owned(), src))
+                            .await
+                            .is_err()
+                        {
+                            log::debug!("Packet dropped");
+                        }
                     }
                 }
             } else if !net.contains(&dest) {
@@ -343,7 +360,12 @@ async fn send_daemon(
                 }
 
                 packet.update_checksum()?;
-                write_packet(&write_tx, (packet.as_ref().to_owned(), target)).await?;
+                if write_packet(&write_tx, (packet.as_ref().to_owned(), target))
+                    .await
+                    .is_err()
+                {
+                    log::debug!("Packet dropped");
+                }
             }
         }
     }
