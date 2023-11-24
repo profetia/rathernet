@@ -15,7 +15,7 @@ use futures::{
 use ipnet::Ipv4Net;
 use packet::{
     icmp,
-    ip::{self, Protocol},
+    ip::{self, v4::Packet as Ipv4Packet, Protocol},
     PacketMut,
 };
 use std::{
@@ -145,7 +145,7 @@ pub(super) async fn flatten<T>(handle: JoinHandle<Result<T>>) -> Result<T> {
     }
 }
 
-pub(super) type AtewayAdapterTask = ((Vec<u8>, Ipv4Addr), Sender<Result<()>>);
+pub(super) type AtewayAdapterTask = (Ipv4Packet<Vec<u8>>, Sender<Result<()>>);
 
 async fn write_daemon(
     config: AtewayAdapterConfig,
@@ -156,7 +156,8 @@ async fn write_daemon(
         .arp(u32::from_be_bytes(config.gateway.octets()) as usize)
         .await?;
     let net = Ipv4Net::with_netmask(config.address, config.netmask)?;
-    while let Some(((bytes, ip), tx)) = write_rx.recv().await {
+    while let Some((packet, tx)) = write_rx.recv().await {
+        let ip = packet.destination();
         let dest = if ip == net.broadcast() || ip.is_broadcast() {
             Ok(SOCKET_BROADCAST_ADDRESS)
         } else if net.contains(&ip) {
@@ -171,7 +172,7 @@ async fn write_daemon(
         let result = match dest {
             Ok(inner) => {
                 log::debug!("Resolve MAC address: {} -> {}", ip, inner);
-                tx_socket.write(inner, &bytes.encode()).await
+                tx_socket.write(inner, &packet.as_ref().encode()).await
             }
             Err(err) => Err(err),
         };
@@ -205,10 +206,7 @@ async fn receive_daemon(
                             .set_source(dest)?
                             .update_checksum()?;
 
-                        if write_packet(&write_tx, (packet.as_ref().to_owned(), src))
-                            .await
-                            .is_err()
-                        {
+                        if write_packet(&write_tx, packet).await.is_err() {
                             log::debug!("Packet dropped");
                         }
                         continue;
@@ -250,10 +248,7 @@ async fn send_daemon(
                 }
                 log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);
 
-                if write_packet(&write_tx, (bytes.to_owned(), dest))
-                    .await
-                    .is_err()
-                {
+                if write_packet(&write_tx, packet.to_owned()).await.is_err() {
                     log::debug!("Packet dropped");
                 }
             }
@@ -264,10 +259,10 @@ async fn send_daemon(
 
 pub(super) async fn write_packet(
     write_tx: &UnboundedSender<AtewayAdapterTask>,
-    body: (Vec<u8>, Ipv4Addr),
+    packet: Ipv4Packet<Vec<u8>>,
 ) -> Result<()> {
     let (tx, rx) = oneshot::channel();
-    write_tx.send((body, tx))?;
+    write_tx.send((packet, tx))?;
     rx.await??;
     Ok(())
 }

@@ -155,7 +155,8 @@ async fn write_daemon(
     mut write_rx: UnboundedReceiver<AtewayAdapterTask>,
 ) -> Result<()> {
     let net = Ipv4Net::with_netmask(config.address, config.netmask)?;
-    while let Some(((bytes, ip), tx)) = write_rx.recv().await {
+    while let Some((packet, tx)) = write_rx.recv().await {
+        let ip = packet.destination();
         let dest = if ip == net.broadcast() || ip.is_broadcast() {
             Ok(SOCKET_BROADCAST_ADDRESS)
         } else if net.contains(&ip) {
@@ -170,7 +171,7 @@ async fn write_daemon(
         let result = match dest {
             Ok(inner) => {
                 log::debug!("Resolve MAC address: {} -> {}", ip, inner);
-                tx_socket.write(inner, &bytes.encode()).await
+                tx_socket.write(inner, &packet.as_ref().encode()).await
             }
             Err(err) => Err(err),
         };
@@ -206,10 +207,7 @@ async fn receive_daemon(
                             .set_destination(src)?
                             .set_source(dest)?
                             .update_checksum()?;
-                        if write_packet(&write_tx, (packet.as_ref().to_owned(), src))
-                            .await
-                            .is_err()
-                        {
+                        if write_packet(&write_tx, packet.to_owned()).await.is_err() {
                             log::debug!("Packet dropped");
                         }
                     }
@@ -288,7 +286,6 @@ async fn send_daemon(
             let src = packet.source();
             let dest = packet.destination();
             let protocol = packet.protocol();
-            let mut target = dest;
 
             if dest == config.host {
                 if protocol == Protocol::Icmp {
@@ -306,7 +303,6 @@ async fn send_daemon(
                             );
                             echo.set_identifier(port)?.checked();
                             packet.set_destination(addr)?;
-                            target = addr;
                         } else {
                             continue;
                         }
@@ -329,7 +325,6 @@ async fn send_daemon(
                         udp.set_destination(port)?
                             .checked(&ip::Packet::V4(enclosing));
                         packet.set_destination(addr)?;
-                        target = addr;
                     } else {
                         continue;
                     }
@@ -351,7 +346,6 @@ async fn send_daemon(
                         tcp.set_destination(port)?
                             .checked(&ip::Packet::V4(enclosing));
                         packet.set_destination(addr)?;
-                        target = addr;
                     } else {
                         continue;
                     }
@@ -360,10 +354,7 @@ async fn send_daemon(
                 }
 
                 packet.update_checksum()?;
-                if write_packet(&write_tx, (packet.as_ref().to_owned(), target))
-                    .await
-                    .is_err()
-                {
+                if write_packet(&write_tx, packet.to_owned()).await.is_err() {
                     log::debug!("Packet dropped");
                 }
             }
