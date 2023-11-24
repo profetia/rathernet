@@ -1,3 +1,4 @@
+use super::builtin::SOCKET_IP_MTU;
 use crate::{
     racsma::{
         builtin::SOCKET_BROADCAST_ADDRESS, AcsmaIoSocket, AcsmaSocketConfig, AcsmaSocketReader,
@@ -16,7 +17,7 @@ use ipnet::Ipv4Net;
 use packet::{
     icmp,
     ip::{self, v4::Packet as Ipv4Packet, Protocol},
-    PacketMut,
+    Builder, Packet, PacketMut,
 };
 use std::{
     future::Future,
@@ -172,11 +173,53 @@ async fn write_daemon(
         let result = match dest {
             Ok(inner) => {
                 log::debug!("Resolve MAC address: {} -> {}", ip, inner);
-                tx_socket.write(inner, &packet.as_ref().encode()).await
+                write_packet_fragmented(&tx_socket, packet, inner).await
             }
             Err(err) => Err(err),
         };
         tx.send(result).ok();
+    }
+    Ok(())
+}
+
+pub(super) async fn write_packet_fragmented(
+    tx_socket: &AcsmaSocketWriter,
+    packet: Ipv4Packet<Vec<u8>>,
+    dest: usize,
+) -> Result<()> {
+    let packets = if packet.flags().contains(ip::v4::Flags::DONT_FRAGMENT) {
+        log::debug!("Don't fragment is set, send packet as is");
+        vec![packet.as_ref().to_owned()]
+    } else {
+        let chunks = packet.payload().chunks(SOCKET_IP_MTU);
+        let mut packets = vec![vec![]; chunks.len()];
+        let mut offset = packet.offset();
+        for (index, chunk) in chunks.enumerate() {
+            let mut builder = ip::v4::Builder::default()
+                .dscp(packet.dscp())?
+                .ecn(packet.ecn())?
+                .id(packet.id())?
+                .ttl(packet.ttl())?
+                .protocol(packet.protocol())?
+                .source(packet.source())?
+                .destination(packet.destination())?
+                .payload(chunk)?
+                .offset(offset)?;
+
+            if index != packets.len() - 1 {
+                builder = builder.flags(ip::v4::Flags::MORE_FRAGMENTS)?
+            } else {
+                builder = builder.flags(packet.flags())?
+            };
+
+            packets[index] = builder.build()?;
+            offset += (chunk.len() / 8) as u16;
+        }
+        log::debug!("Fragment packet into {} packets", packets.len());
+        packets
+    };
+    for packet in packets {
+        tx_socket.write(dest, &packet.encode()).await?;
     }
     Ok(())
 }
@@ -206,7 +249,7 @@ async fn receive_daemon(
                             .set_source(dest)?
                             .update_checksum()?;
 
-                        if write_packet(&write_tx, packet).await.is_err() {
+                        if send_packet(&write_tx, packet).await.is_err() {
                             log::debug!("Packet dropped");
                         }
                         continue;
@@ -248,7 +291,7 @@ async fn send_daemon(
                 }
                 log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);
 
-                if write_packet(&write_tx, packet.to_owned()).await.is_err() {
+                if send_packet(&write_tx, packet.to_owned()).await.is_err() {
                     log::debug!("Packet dropped");
                 }
             }
@@ -257,7 +300,7 @@ async fn send_daemon(
     Ok(())
 }
 
-pub(super) async fn write_packet(
+pub(super) async fn send_packet(
     write_tx: &UnboundedSender<AtewayAdapterTask>,
     packet: Ipv4Packet<Vec<u8>>,
 ) -> Result<()> {

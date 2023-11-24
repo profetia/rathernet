@@ -1,5 +1,5 @@
 use super::{
-    adapter::{flatten, write_packet, AtewayAdapterTask},
+    adapter::{flatten, send_packet, AtewayAdapterTask},
     builtin::NAT_PORT_RANGE,
     AtewayIoError, AtewayIoSocket,
 };
@@ -8,7 +8,8 @@ use crate::{
         builtin::SOCKET_BROADCAST_ADDRESS, AcsmaIoSocket, AcsmaSocketConfig, AcsmaSocketReader,
         AcsmaSocketWriter,
     },
-    rather::encode::{DecodeToBytes, EncodeFromBytes},
+    rateway::adapter::write_packet_fragmented,
+    rather::encode::DecodeToBytes,
     raudio::AsioDevice,
 };
 use anyhow::Result;
@@ -171,7 +172,7 @@ async fn write_daemon(
         let result = match dest {
             Ok(inner) => {
                 log::debug!("Resolve MAC address: {} -> {}", ip, inner);
-                tx_socket.write(inner, &packet.as_ref().encode()).await
+                write_packet_fragmented(&tx_socket, packet, inner).await
             }
             Err(err) => Err(err),
         };
@@ -207,7 +208,7 @@ async fn receive_daemon(
                             .set_destination(src)?
                             .set_source(dest)?
                             .update_checksum()?;
-                        if write_packet(&write_tx, packet.to_owned()).await.is_err() {
+                        if send_packet(&write_tx, packet.to_owned()).await.is_err() {
                             log::debug!("Packet dropped");
                         }
                     }
@@ -354,7 +355,7 @@ async fn send_daemon(
                 }
 
                 packet.update_checksum()?;
-                if write_packet(&write_tx, packet.to_owned()).await.is_err() {
+                if send_packet(&write_tx, packet.to_owned()).await.is_err() {
                     log::debug!("Packet dropped");
                 }
             }
