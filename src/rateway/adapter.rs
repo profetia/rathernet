@@ -1,5 +1,8 @@
 use crate::{
-    racsma::{AcsmaIoSocket, AcsmaSocketConfig, AcsmaSocketReader, AcsmaSocketWriter},
+    racsma::{
+        builtin::SOCKET_BROADCAST_ADDRESS, AcsmaIoSocket, AcsmaSocketConfig, AcsmaSocketReader,
+        AcsmaSocketWriter,
+    },
     rather::encode::{DecodeToBytes, EncodeFromBytes},
     raudio::AsioDevice,
 };
@@ -154,7 +157,10 @@ async fn write_daemon(
         .await?;
     let net = Ipv4Net::with_netmask(config.address, config.netmask)?;
     while let Some(((bytes, ip), tx)) = write_rx.recv().await {
-        let dest = if net.contains(&ip) {
+        let dest = if ip == net.broadcast() || ip.is_broadcast() {
+            Ok(SOCKET_BROADCAST_ADDRESS)
+        } else if net.contains(&ip) {
+            log::debug!("Resolving MAC address: {}", ip);
             tx_socket
                 .arp(u32::from_be_bytes(ip.octets()) as usize)
                 .await
@@ -199,7 +205,12 @@ async fn receive_daemon(
                             .set_source(dest)?
                             .update_checksum()?;
 
-                        write_packet(&write_tx, (packet.as_ref().to_owned(), src)).await?;
+                        if write_packet(&write_tx, (packet.as_ref().to_owned(), src))
+                            .await
+                            .is_err()
+                        {
+                            log::debug!("Packet dropped");
+                        }
                         continue;
                     }
                 } else if protocol == Protocol::Udp {
@@ -239,7 +250,12 @@ async fn send_daemon(
                 }
                 log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);
 
-                write_packet(&write_tx, (bytes.to_owned(), dest)).await?;
+                if write_packet(&write_tx, (bytes.to_owned(), dest))
+                    .await
+                    .is_err()
+                {
+                    log::debug!("Packet dropped");
+                }
             }
         }
     }
