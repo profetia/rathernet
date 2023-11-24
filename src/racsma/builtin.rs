@@ -33,7 +33,7 @@ pub const SOCKET_SLOT_TIMEOUT: Duration = Duration::from_millis(85);
 pub const SOCKET_ACK_TIMEOUT: Duration = Duration::from_millis(30);
 pub const SOCKET_RECIEVE_TIMEOUT: Duration = Duration::from_millis(25);
 
-pub const SOCKET_MAX_RESENDS: usize = 30;
+pub const SOCKET_MAX_RESENDS: usize = 8;
 pub const SOCKET_MAX_RANGE: usize = 6;
 pub const SOCKET_JAR_CAPACITY: usize = 8;
 

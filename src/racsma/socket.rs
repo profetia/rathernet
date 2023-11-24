@@ -83,7 +83,7 @@ impl AcsmaSocketReader {
         Ok(result)
     }
 
-    pub(crate) async fn read_unchecked(&mut self) -> Result<BitVec> {
+    pub async fn read_unchecked(&mut self) -> Result<BitVec> {
         let mut bucket = BTreeMap::new();
         while let Some(frame) = self.read_rx.recv().await {
             let header = frame.header().clone();
@@ -362,7 +362,7 @@ async fn socket_daemon(
                 write_state = match timer {
                     AcsmaSocketWriteTimer::Timeout { start: _, inner } => {
                         // log::debug!("ACK timer expired for frame {}", inner.task.0.header().seq);
-                        Some(create_backoff(&mut rng, inner.task, 0))
+                        Some(create_backoff(&mut rng, inner, 0))
                     }
                     AcsmaSocketWriteTimer::Backoff {
                         inner: Some(inner),
@@ -373,7 +373,7 @@ async fn socket_daemon(
                         // log::debug!("Backoff timer expired. {}", header.seq);
                         if !is_channel_free(&config, &mut write_monitor).await {
                             // log::debug!("Medium state: busy. {}", header.seq);
-                            Some(create_backoff(&mut rng, inner.task, retry + 1))
+                            Some(create_backoff(&mut rng, inner, retry + 1))
                         } else if inner.resends > SOCKET_MAX_RESENDS {
                             // log::debug!("Medium state: free. resends exceeded {}", header.seq);
                             inner.link_error();
@@ -384,9 +384,14 @@ async fn socket_daemon(
                             if !write_bits(&config, &write_ather, &mut write_monitor, &bits).await?
                             {
                                 // log::debug!("Medium state: free. Colision detected {}", header.seq);
-                                Some(create_backoff(&mut rng, inner.task, retry + 1))
+                                Some(create_backoff(&mut rng, inner, retry + 1))
                             } else {
                                 // log::debug!("Medium state: free. Resent {}", header.seq);
+                                println!(
+                                    "Resent {} for {} times",
+                                    inner.task.0.header().seq,
+                                    inner.resends + 1
+                                );
                                 Some(AcsmaSocketWriteTimer::timeout(
                                     inner.task,
                                     inner.resends + 1,
@@ -409,13 +414,13 @@ async fn socket_daemon(
                 // log::debug!("Accepted frame from source with index {}", header.seq);
                 write_state = if !is_channel_free(&config, &mut write_monitor).await {
                     // log::debug!("Medium state: busy. set backoff timer");
-                    Some(create_backoff(&mut rng, task, 0))
+                    Some(create_backoff(&mut rng, AcsmaSocketWriteTimerInner { task, resends: 0 }, 0))
                 } else {
                     // log::debug!("Medium state: free. Sending {}", header.seq);
                     let bits = Into::<BitVec>::into(task.0.clone());
                     if !write_bits(&config, &write_ather, &mut write_monitor, &bits).await? {
                         // log::debug!("Medium state: free. Colision detected");
-                        Some(create_backoff(&mut rng, task, 1))
+                        Some(create_backoff(&mut rng, AcsmaSocketWriteTimerInner { task, resends: 0 }, 1))
                     } else {
                         // log::debug!("Medium state: free. Sent {}", header.seq);
                         Some(AcsmaSocketWriteTimer::timeout(task, 0))
@@ -439,11 +444,11 @@ fn is_for_self(config: &AcsmaSocketConfig, header: &FrameHeader) -> bool {
 
 fn create_backoff(
     rng: &mut SmallRng,
-    task: AcsmaSocketWriteTask,
+    inner: AcsmaSocketWriteTimerInner,
     retry: usize,
 ) -> AcsmaSocketWriteTimer {
     let duration = generate_backoff(rng, retry);
-    AcsmaSocketWriteTimer::backoff(Some(task), retry, duration)
+    AcsmaSocketWriteTimer::backoff(Some(inner), retry, duration)
 }
 
 fn create_resp(config: &AcsmaSocketConfig, non_ack: &NonAckFrame) -> Option<BitVec> {
@@ -582,8 +587,7 @@ impl AcsmaSocketWriteTimer {
         }
     }
 
-    fn backoff(task: Option<AcsmaSocketWriteTask>, retry: usize, duration: Duration) -> Self {
-        let inner = task.map(|task| AcsmaSocketWriteTimerInner { task, resends: 0 });
+    fn backoff(inner: Option<AcsmaSocketWriteTimerInner>, retry: usize, duration: Duration) -> Self {        
         Self::Backoff {
             start: Instant::now(),
             inner,
