@@ -1,3 +1,4 @@
+use super::AtewayIoError;
 use crate::{
     racsma::{
         builtin::SOCKET_BROADCAST_ADDRESS, AcsmaIoSocket, AcsmaSocketConfig, AcsmaSocketReader,
@@ -154,7 +155,8 @@ async fn write_daemon(
 ) -> Result<()> {
     let gateway_mac = tx_socket
         .arp(u32::from_be_bytes(config.gateway.octets()) as usize)
-        .await?;
+        .await
+        .map_err(|_| AtewayIoError::GatewayUnreachable(config.gateway));
     let net = Ipv4Net::with_netmask(config.address, config.netmask)?;
     while let Some((packet, tx)) = write_rx.recv().await {
         let ip = packet.destination();
@@ -166,7 +168,7 @@ async fn write_daemon(
                 .arp(u32::from_be_bytes(ip.octets()) as usize)
                 .await
         } else {
-            Ok(gateway_mac)
+            gateway_mac.map_err(|err| err.into())
         };
 
         let result = match dest {
@@ -206,8 +208,8 @@ async fn receive_daemon(
                             .set_source(dest)?
                             .update_checksum()?;
 
-                        if write_packet(&write_tx, packet).await.is_err() {
-                            log::debug!("Packet dropped");
+                        if let Err(err) = write_packet(&write_tx, packet).await {
+                            log::warn!("Packet dropped {}", err);
                         }
                         continue;
                     }
@@ -248,8 +250,8 @@ async fn send_daemon(
                 }
                 log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);
 
-                if write_packet(&write_tx, packet.to_owned()).await.is_err() {
-                    log::debug!("Packet dropped");
+                if let Err(err) = write_packet(&write_tx, packet.to_owned()).await {
+                    log::warn!("Packet dropped {}", err);
                 }
             }
         }
