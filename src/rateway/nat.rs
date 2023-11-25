@@ -207,8 +207,8 @@ async fn receive_daemon(
                             .set_destination(src)?
                             .set_source(dest)?
                             .update_checksum()?;
-                        if write_packet(&write_tx, packet.to_owned()).await.is_err() {
-                            log::debug!("Packet dropped");
+                        if let Err(err) = write_packet(&write_tx, packet.to_owned()).await {
+                            log::warn!("Packet dropped {}", err);
                         }
                     }
                 }
@@ -289,11 +289,11 @@ async fn send_daemon(
 
             if dest == config.host {
                 if protocol == Protocol::Icmp {
-                    log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);
                     let mut icmp = icmp::Packet::new(packet.payload_mut())?;
                     if let Ok(mut echo) = icmp.echo_mut() {
                         let mut guard = table.lock();
                         if let Some((addr, port)) = guard.backward(echo.identifier()) {
+                            log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);
                             log::debug!(
                                 "Backward {}:{} to {}:{}",
                                 config.address,
@@ -308,11 +308,11 @@ async fn send_daemon(
                         }
                     }
                 } else if protocol == Protocol::Udp {
-                    log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);
                     let mut enclosing = packet.to_owned();
                     let mut udp = udp::Packet::new(packet.payload_mut())?;
                     let mut guard = table.lock();
                     if let Some((addr, port)) = guard.backward(udp.destination()) {
+                        log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);
                         log::debug!(
                             "Backward {}:{} to {}:{}",
                             config.host,
@@ -329,11 +329,11 @@ async fn send_daemon(
                         continue;
                     }
                 } else if protocol == Protocol::Tcp {
-                    log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);
                     let mut enclosing = packet.to_owned();
                     let mut tcp = tcp::Packet::new(packet.payload_mut())?;
                     let mut guard = table.lock();
                     if let Some((addr, port)) = guard.backward(tcp.destination()) {
+                        log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);
                         log::debug!(
                             "Backward {}:{} to {}:{}",
                             config.host,
@@ -354,8 +354,8 @@ async fn send_daemon(
                 }
 
                 packet.update_checksum()?;
-                if write_packet(&write_tx, packet.to_owned()).await.is_err() {
-                    log::debug!("Packet dropped");
+                if let Err(err) = write_packet(&write_tx, packet.to_owned()).await {
+                    log::warn!("Packet dropped {}", err);
                 }
             }
         }
