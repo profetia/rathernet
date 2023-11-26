@@ -65,6 +65,9 @@ enum SubCommand {
         /// The port on athernet nat that will be pinged.
         #[clap(short, long, default_value = "14999")]
         port: Option<u16>,
+        /// The length of the ping payload.
+        #[clap(short, long, default_value = "32")]
+        length: usize,
     },
     /// Transmit a file line by line in TCP.
     Tcp {
@@ -228,8 +231,9 @@ async fn main() -> Result<()> {
             address,
             elapsed,
             port,
+            length,
         } => {
-            ping::ping(address, peer, port, Duration::from_secs(elapsed)).await?;
+            ping::ping(address, peer, port, Duration::from_secs(elapsed), length).await?;
         }
         SubCommand::Tcp { cmd } => match cmd {
             TcpSubCommand::Receive { address, file } => {

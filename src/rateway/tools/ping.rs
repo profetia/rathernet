@@ -21,6 +21,7 @@ pub async fn ping(
     peer: Ipv4Addr,
     port: Option<u16>,
     timeout: Duration,
+    length: usize,
 ) -> Result<()> {
     let mut socket = AtewayIoSocket::try_new(address)?;
 
@@ -39,7 +40,7 @@ pub async fn ping(
 
     let mut rng = rand::thread_rng();
     loop {
-        let mut payload = [0u8; 32];
+        let mut payload = vec![0; length];
         for item in payload.iter_mut() {
             *item = rng.gen_range(0x20..0x7f);
         }
