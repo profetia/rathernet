@@ -1,6 +1,6 @@
-# Part 10: ARP (2023)
+# Part 5: IP Fragmentation (2023)
 
-git checkout -b part10 101f370
+git checkout -b part5a 0ca9bf4
 
 cargo build --release
 
@@ -15,8 +15,8 @@ cargo build --release
 # Set up the route table
 
 # Ping node 1
-ping "<ipv4>"
+ping -a "<ipv4>" -e 3 -p 14001 -l 300 "<ipv4>"
 
 git checkout main
 
-git branch -D part10
+git branch -D part5a
