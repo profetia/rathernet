@@ -4,7 +4,7 @@ use cpal::SupportedStreamConfig;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use rathernet::{
     racsma::AcsmaSocketConfig,
-    rateway::{utils, AtewayAdapterConfig, AtewayIoAdaper, AtewayIoNat, AtewayNatConfig},
+    rateway::{tools::ping, AtewayAdapterConfig, AtewayIoAdaper, AtewayIoNat, AtewayNatConfig},
     rather::AtherStreamConfig,
     raudio::AsioDevice,
 };
@@ -229,7 +229,7 @@ async fn main() -> Result<()> {
             elapsed,
             port,
         } => {
-            utils::ping(address, peer, port, Duration::from_secs(elapsed)).await?;
+            ping::ping(address, peer, port, Duration::from_secs(elapsed)).await?;
         }
         SubCommand::Tcp { cmd } => match cmd {
             TcpSubCommand::Receive { address, file } => {

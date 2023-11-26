@@ -5,7 +5,7 @@ mod socket;
 
 pub mod builtin;
 pub mod tcp;
-pub mod utils;
+pub mod tools;
 
 pub use adapter::{AtewayAdapterConfig, AtewayIoAdaper};
 pub use nat::{AtewayIoNat, AtewayNatConfig};
