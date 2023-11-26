@@ -159,7 +159,10 @@ async fn write_daemon(
     let gateway_mac = tx_socket
         .arp(u32::from_be_bytes(config.gateway.octets()) as usize)
         .await
-        .map_err(|_| AtewayIoError::GatewayUnreachable(config.gateway));
+        .map_err(|_| {
+            log::warn!("Gateway unreachable: {}", config.gateway);
+            AtewayIoError::GatewayUnreachable(config.gateway)
+        });
     let net = Ipv4Net::with_netmask(config.address, config.netmask)?;
     'a: while let Some((packet, tx)) = write_rx.recv().await {
         let ip = packet.destination();
