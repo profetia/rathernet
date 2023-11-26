@@ -1,6 +1,7 @@
 use super::{
     adapter::{flatten, write_packet, AtewayAdapterTask},
     builtin::NAT_PORT_RANGE,
+    fragment::{self, Assembler},
     AtewayIoError, AtewayIoSocket,
 };
 use crate::{
@@ -155,7 +156,7 @@ async fn write_daemon(
     mut write_rx: UnboundedReceiver<AtewayAdapterTask>,
 ) -> Result<()> {
     let net = Ipv4Net::with_netmask(config.address, config.netmask)?;
-    while let Some((packet, tx)) = write_rx.recv().await {
+    'a: while let Some((packet, tx)) = write_rx.recv().await {
         let ip = packet.destination();
         let dest = if ip == net.broadcast() || ip.is_broadcast() {
             Ok(SOCKET_BROADCAST_ADDRESS)
@@ -168,14 +169,28 @@ async fn write_daemon(
             Ok(config.socket_config.mac)
         };
 
-        let result = match dest {
+        match dest {
             Ok(inner) => {
                 log::debug!("Resolve MAC address: {} -> {}", ip, inner);
-                tx_socket.write(inner, &packet.as_ref().encode()).await
+                let packets = match fragment::split_packet(packet) {
+                    Ok(packets) => packets,
+                    Err(err) => {
+                        tx.send(Err(err)).ok();
+                        continue;
+                    }
+                };
+                for packet in packets {
+                    if let Err(err) = tx_socket.write(inner, &packet.encode()).await {
+                        tx.send(Err(err)).ok();
+                        continue 'a;
+                    }
+                }
+                tx.send(Ok(())).ok();
             }
-            Err(err) => Err(err),
+            Err(err) => {
+                tx.send(Err(err)).ok();
+            }
         };
-        let _ = tx.send(result);
     }
     Ok(())
 }
@@ -188,10 +203,20 @@ async fn receive_daemon(
     table: Arc<Mutex<AtewayNatTable>>,
 ) -> Result<()> {
     let net = Ipv4Net::with_netmask(config.address, config.netmask)?;
+    let mut assembler = Assembler::new();
 
     while let Ok(packet) = rx_socket.read_unchecked().await {
         let bytes = DecodeToBytes::decode(&packet);
-        if let Ok(ip::Packet::V4(mut packet)) = ip::Packet::new(bytes) {
+        if let Ok(ip::Packet::V4(packet)) = ip::Packet::new(bytes) {
+            let mut packet = match assembler.assemble(packet) {
+                Ok(Some(packet)) => packet,
+                Ok(None) => continue,
+                Err(err) => {
+                    log::warn!("Packet dropped {}", err);
+                    continue;
+                }
+            };
+
             let src = packet.source();
             let dest = packet.destination();
             let protocol = packet.protocol();
