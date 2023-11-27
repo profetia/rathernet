@@ -92,6 +92,14 @@ The benchmark results are as follows:
 | Racsma    | 50KB      | Yes           | Wired, Noisy   | 24kbps   | 350ms | 33s  |
 | Rateway   | 2KB       | No            | Wired          | 24kbps   | 150ms | <1s  |
 
+
+
+**Surf the Internet with Rathernet**
+
+![Surf the Internet with Rathernet](assets/aftp/surf.jpg)
+
+
+
 ## License
 
 This project is licensed under the MPL-2.0 license. See the [LICENSE](LICENSE) file for details.
