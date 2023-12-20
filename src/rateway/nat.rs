@@ -279,6 +279,7 @@ async fn send_daemon(
     mut cap: Capture<Active>,
     table: Arc<Mutex<AtewayNatTable>>,
 ) -> Result<()> {
+    let net = Ipv4Net::with_netmask(config.address, config.netmask)?;
     while let Ok(capture) = task::block_in_place(|| cap.next_packet()) {
         let eth = ether::Packet::new(capture.data)?;
         if eth.protocol() == ether::Protocol::Ipv4 {
@@ -354,6 +355,10 @@ async fn send_daemon(
                 }
 
                 packet.update_checksum()?;
+                if let Err(err) = write_packet(&write_tx, packet.to_owned()).await {
+                    log::warn!("Packet dropped {}", err);
+                }
+            } else if dest.is_broadcast() || net.contains(&dest) {
                 if let Err(err) = write_packet(&write_tx, packet.to_owned()).await {
                     log::warn!("Packet dropped {}", err);
                 }
