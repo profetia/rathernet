@@ -127,7 +127,7 @@ async fn nat_daemon(config: AtewayNatConfig, device: AsioDevice) -> Result<()> {
 
     let device = find_device(config.host)?;
     let mut cap = Capture::from_device(device)?.immediate_mode(true).open()?;
-    cap.filter(&format!("ip dst host {}", config.host), true)?;
+    cap.filter("ip", true)?;
 
     let (write_tx, write_rx) = mpsc::unbounded_channel();
 
@@ -359,6 +359,7 @@ async fn send_daemon(
                     log::warn!("Packet dropped {}", err);
                 }
             } else if dest.is_broadcast() || net.contains(&dest) {
+                log::debug!("Send packet {} -> {} ({:?})", src, dest, protocol);
                 if let Err(err) = write_packet(&write_tx, packet.to_owned()).await {
                     log::warn!("Packet dropped {}", err);
                 }
