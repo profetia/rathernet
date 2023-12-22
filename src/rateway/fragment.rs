@@ -35,7 +35,11 @@ pub fn split_packet(source: Ipv4Packet<Vec<u8>>) -> Result<Vec<Vec<u8>>> {
         offset += (chunk.len() / 8) as u16;
     }
 
-    log::debug!("Packet of {} bytes is fragmented into {} fragments", source.payload().len(), fragments.len());
+    log::debug!(
+        "Packet of {} bytes is fragmented into {} fragments",
+        source.payload().len(),
+        fragments.len()
+    );
 
     Ok(fragments)
 }
@@ -52,9 +56,7 @@ impl Assembler {
     }
 
     pub fn assemble(&mut self, packet: Ipv4Packet<Vec<u8>>) -> Result<Option<Ipv4Packet<Vec<u8>>>> {
-        if flags_patch(&packet) & (ipv4::Ipv4Flags::MoreFragments as u16) == 0
-            && offset_patch(&packet) == 0
-        {
+        if !has_more_fragment(&packet) && is_first_fragment(&packet) {
             log::debug!("Packet {} is not fragmented", packet.id());
             return Ok(Some(packet));
         }
@@ -62,7 +64,7 @@ impl Assembler {
         let id = packet.id();
         let entry = self.jar.entry(packet.id()).or_default();
         entry.push(packet);
-        entry.sort_by_key(|packet| offset_patch(packet));
+        entry.sort_by_key(|item| item.patched_offset());
 
         if !is_assembliable(entry) {
             log::debug!("Packet {} is not assembliable", id);
@@ -89,13 +91,21 @@ impl Assembler {
     }
 }
 
-fn is_assembliable(entry: &Vec<Ipv4Packet<Vec<u8>>>) -> bool {
-    if flags_patch(entry.last().unwrap()) & 0b001 != 0 {
+pub fn has_more_fragment(packet: &Ipv4Packet<Vec<u8>>) -> bool {
+    (packet.patched_flags() & (ipv4::Ipv4Flags::MoreFragments as u16)) != 0
+}
+
+pub fn is_first_fragment(packet: &Ipv4Packet<Vec<u8>>) -> bool {
+    packet.patched_offset() == 0
+}
+
+fn is_assembliable(entry: &[Ipv4Packet<Vec<u8>>]) -> bool {
+    if has_more_fragment(entry.last().unwrap()) {
         return false;
     }
     let mut offset = 0;
     for packet in entry.iter() {
-        if offset_patch(packet) != offset {
+        if packet.patched_offset() != offset {
             return false;
         }
         offset += (packet.payload().len() / 8) as u16;
@@ -103,12 +113,22 @@ fn is_assembliable(entry: &Vec<Ipv4Packet<Vec<u8>>>) -> bool {
     true
 }
 
-fn flags_patch(packet: &Ipv4Packet<Vec<u8>>) -> u16 {
-    let flags = u16::from_be_bytes(packet.as_ref()[6..=7].try_into().unwrap());
-    flags >> 13
+trait Patch {
+    fn patched_flags(&self) -> u16;
+    fn patched_offset(&self) -> u16;
 }
 
-fn offset_patch(packet: &Ipv4Packet<Vec<u8>>) -> u16 {
-    let offset = u16::from_be_bytes(packet.as_ref()[6..=7].try_into().unwrap());
-    offset & 0b0001_1111_1111_1111
+impl<T> Patch for Ipv4Packet<T>
+where
+    T: AsRef<[u8]>,
+{
+    fn patched_flags(&self) -> u16 {
+        let flags = u16::from_be_bytes(self.as_ref()[6..=7].try_into().unwrap());
+        flags >> 13
+    }
+
+    fn patched_offset(&self) -> u16 {
+        let offset = u16::from_be_bytes(self.as_ref()[6..=7].try_into().unwrap());
+        offset & 0b0001_1111_1111_1111
+    }
 }
