@@ -229,7 +229,7 @@ async fn receive_daemon(
                         }
                     }
                 }
-            } else if !net.contains(&dest) {
+            } else if !net.contains(&dest) && dest != config.host {
                 if protocol == Protocol::Icmp {
                     packet.set_source(config.host)?;
 
