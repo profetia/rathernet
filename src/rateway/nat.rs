@@ -9,6 +9,7 @@ use crate::{
         builtin::SOCKET_BROADCAST_ADDRESS, AcsmaIoSocket, AcsmaSocketConfig, AcsmaSocketReader,
         AcsmaSocketWriter,
     },
+    rateway::fragment::is_first_fragment,
     rather::encode::{DecodeToBytes, EncodeFromBytes},
     raudio::AsioDevice,
 };
@@ -207,16 +208,7 @@ async fn receive_daemon(
 
     while let Ok(packet) = rx_socket.read_unchecked().await {
         let bytes = DecodeToBytes::decode(&packet);
-        if let Ok(ip::Packet::V4(packet)) = ip::Packet::new(bytes) {
-            let mut packet = match assembler.assemble(packet) {
-                Ok(Some(packet)) => packet,
-                Ok(None) => continue,
-                Err(err) => {
-                    log::warn!("Packet dropped {}", err);
-                    continue;
-                }
-            };
-
+        if let Ok(ip::Packet::V4(mut packet)) = ip::Packet::new(bytes) {
             let src = packet.source();
             let dest = packet.destination();
             let protocol = packet.protocol();
@@ -238,27 +230,45 @@ async fn receive_daemon(
                     }
                 }
             } else if !net.contains(&dest) {
-                let mut packet = packet.to_owned();
-                packet.set_source(config.host)?;
-
                 if protocol == Protocol::Icmp {
+                    packet.set_source(config.host)?;
+
                     log::debug!("Receive packet {} -> {} ({:?})", src, dest, protocol);
-                    let mut icmp = icmp::Packet::new(packet.payload_mut())?;
-                    if let Ok(mut echo) = icmp.echo_mut() {
-                        let mut guard = table.lock();
-                        let port = guard.forward((src, echo.identifier()));
-                        log::debug!(
-                            "Forward {}:{} to {}:{}",
-                            src,
-                            echo.identifier(),
-                            config.host,
-                            port
-                        );
-                        echo.set_identifier(port)?.checked();
+
+                    if is_first_fragment(&packet) {
+                        let mut icmp = icmp::Packet::new(packet.payload_mut())?;
+                        if let Ok(mut echo) = icmp.echo_mut() {
+                            let mut guard = table.lock();
+                            let port = guard.forward((src, echo.identifier()));
+                            log::debug!(
+                                "Forward {}:{} to {}:{}",
+                                src,
+                                echo.identifier(),
+                                config.host,
+                                port
+                            );
+                            echo.set_identifier(port)?.checked();
+                        }
                     } else {
+                        log::debug!("Forward {} -> {} as is", src, dest);
+                    }
+
+                    packet.update_checksum()?;
+                    raw_socket.send(packet.as_ref())?;
+                    continue;
+                }
+
+                let mut packet = match assembler.assemble(packet) {
+                    Ok(Some(packet)) => packet,
+                    Ok(None) => continue,
+                    Err(err) => {
+                        log::warn!("Packet dropped {}", err);
                         continue;
                     }
-                } else if protocol == Protocol::Udp {
+                };
+                packet.set_source(config.host)?;
+
+                if protocol == Protocol::Udp {
                     log::debug!("Receive packet {} -> {} ({:?})", src, dest, protocol);
                     let enclosing = packet.to_owned();
                     let mut udp = udp::Packet::new(packet.payload_mut())?;
