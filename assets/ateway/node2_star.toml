@@ -1,0 +1,10 @@
+name = "Athernet"
+ip = "172.18.1.1"
+netmask = "255.255.255.0"
+host = "<ipv4>"
+
+[socket]
+mac = "1"
+
+[routes]
+14001 = "172.18.1.2:14001"

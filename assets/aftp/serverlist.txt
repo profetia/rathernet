@@ -1,0 +1,6 @@
+ftp.ncnu.edu.tw
+ftp.sjtu.edu.cn
+mirrors.ustc.edu.cn
+ftp.suse.com
+speedtest.tele2.net
+ftp.ne.jp
